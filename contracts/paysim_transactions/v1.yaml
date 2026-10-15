@@ -1,0 +1,36 @@
+contract: paysim_transactions
+version: 1
+description: Daily mobile-money transaction extract (demo contract)
+source:
+  formats: [csv]
+  encoding: utf-8
+  delimiter: ","
+target:
+  table: transactions_paysim
+  key: row_hash
+  on_conflict: update
+columns:
+  - name: step
+    source_name: step
+    type: int
+    required: true
+    min: 1
+  - name: type
+    source_name: type
+    type: str
+    required: true
+    in_set: [PAYMENT, TRANSFER, CASH_OUT, CASH_IN, DEBIT]
+  - name: amount
+    source_name: amount
+    type: float
+    required: true
+  - name: name_orig
+    source_name: nameOrig
+    type: str
+    required: true
+    pattern: "^C[0-9]+$"
+rules:
+  - code: AMOUNT_NEGATIVE
+    column: amount
+    check: ">= 0"
+    message: amount must be non-negative

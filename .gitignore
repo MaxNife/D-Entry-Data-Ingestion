@@ -1,0 +1,9 @@
+__pycache__/
+.venv/
+data/
+*.pyc
+.env
+alembic/*.pyc
+dist/
+src/*.egg-info/
+.ruff_cache/

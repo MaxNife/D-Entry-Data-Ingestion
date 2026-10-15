@@ -1,0 +1,31 @@
+contract: bank_transactions
+version: 1
+description: Bank transaction extract, second file type (demo contract)
+source:
+  formats: [csv]
+  encoding: utf-8
+  delimiter: ","
+target:
+  table: transactions_bank
+  key: [txn_id]
+  on_conflict: update
+columns:
+  - name: txn_id
+    source_name: txn_id
+    type: str
+    required: true
+    max_length: 64
+  - name: amount
+    source_name: amount
+    type: float
+    required: true
+  - name: txn_type
+    source_name: txn_type
+    type: str
+    required: true
+    in_set: [CREDIT, DEBIT]
+rules:
+  - code: AMOUNT_NEGATIVE
+    column: amount
+    check: ">= 0"
+    message: amount must be non-negative

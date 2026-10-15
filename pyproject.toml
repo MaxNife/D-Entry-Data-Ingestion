@@ -1,0 +1,54 @@
+[project]
+name = "ingest-platform"
+version = "0.1.0"
+description = "Batch file ingestion front door: validate CSV/Excel against versioned contracts, land trusted rows in Postgres."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "alembic>=1.13",
+  "pandera>=0.20",
+  "pandas>=2.2",
+  "pyyaml>=6.0",
+  "typer>=0.12",
+  "pydantic-settings>=2.3",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
+  "openpyxl>=3.1",
+]
+
+[project.scripts]
+ingest = "ingest.cli:app"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "RUF", "SIM"]
+ignore = ["BLE001", "S101", "S608", "S112", "TRY004", "TRY003", "EM101", "EM102", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "httpx>=0.27",
+]
+
+[tool.uv]
+package = true
