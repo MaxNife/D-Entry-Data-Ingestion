@@ -22,6 +22,11 @@ from ingest.db.models import TARGET_TYPE_MAP, BatchChunk, RejectedRecord
 
 
 def _norm(v, col_type: str = "str"):
+    """Coerce a validated cell to a Python value the DB column can bind.
+
+    Files are read as text; without this, a numeric string bound to a bigint
+    or date column reaches Postgres as text and fails the assignment cast.
+    """
     if v is None:
         return None
     try:
@@ -31,6 +36,28 @@ def _norm(v, col_type: str = "str"):
         pass
     if isinstance(v, pd.Timestamp):
         return v.date() if col_type == "date" else v.to_pydatetime()
+    if col_type == "int":
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+    if col_type in ("float", "decimal"):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    if col_type == "bool":
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "t", "y")
+        return bool(v)
+    if col_type in ("date", "datetime"):
+        try:
+            ts = pd.to_datetime(v)
+        except (TypeError, ValueError):
+            return None
+        if pd.isna(ts):
+            return None
+        return ts.date() if col_type == "date" else ts.to_pydatetime()
     if hasattr(v, "item"):
         try:
             return v.item()
@@ -40,7 +67,13 @@ def _norm(v, col_type: str = "str"):
 
 
 def ensure_target_table(engine, contract: Contract) -> Table:
-    """Create the contract's target table if missing; return the Table."""
+    """Create the contract's target table if missing; return the real Table.
+
+    The table may already exist (created by a migration, the test suite, or an
+    operator) with its own column types — e.g. a ``uuid`` ``batch_id``. We build
+    and create our own definition for the missing case, then reflect what is
+    actually there so inserts bind against the true column types.
+    """
     meta = MetaData()
     cols = [
         Column("batch_id", String(36), nullable=False),
@@ -58,7 +91,8 @@ def ensure_target_table(engine, contract: Contract) -> Table:
         extend_existing=True,
     )
     meta.create_all(bind=engine, tables=[table])
-    return table
+    reflected = MetaData()
+    return Table(contract.target_table, reflected, autoload_with=engine)
 
 
 def row_key_for(record: dict, contract: Contract) -> str:
