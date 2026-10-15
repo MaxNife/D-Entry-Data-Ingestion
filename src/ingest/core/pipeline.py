@@ -117,120 +117,8 @@ def _check_header(path: Path, contract: Contract) -> str | None:
     return None
 
 
-def run_pipeline(
-    file_path: str | Path,
-    contract_ref: str,
-    *,
-    reprocess_batch_id: str | None = None,
-    engine=None,
-    chunk_size: int | None = None,
-) -> dict:
-    """Run the whole flow. Returns {batch_id, status, skipped, total/accepted/rejected}."""
-    from ingest.db.session import get_engine
-
-    engine = engine or get_engine()
-    chunk_size = chunk_size or settings.chunk_size
-    src = Path(file_path)
-    contract: Contract = load_contract(contract_ref)
-
-    sha = sha256_file(src)
-    stored = store_upload(src, sha)
-
-    # --- reprocess path ---
-    if reprocess_batch_id:
-        batch = get_batch(engine, reprocess_batch_id)
-        if batch is None:
-            raise ValueError(f"unknown batch {reprocess_batch_id}")
-        if batch.status not in ("partial", "failed"):
-            raise ValueError(f"only partial/failed batches can be reprocessed (got {batch.status})")
-        with engine.begin() as conn:
-            conn.execute(
-                Batch.__table__.update()
-                .where(Batch.batch_id == batch.batch_id)
-                .values(
-                    status="processing",
-                    contract_name=contract.name,
-                    contract_version=contract.version,
-                    contract_hash=contract.hash,
-                    failure_reason=None,
-                    started_at=_utcnow(),
-                    finished_at=None,
-                    retry_attempts=(batch.retry_attempts + 1),
-                )
-            )
-        clear_attempt(engine, batch.batch_id)
-        batch_id = batch.batch_id
-        stored = stored_path(batch)
-        if not stored.exists():
-            return _fail(engine, batch_id, f"stored raw file missing: {stored}")
-    else:
-        # --- idempotency check (file level) ---
-        with Session(engine) as s:
-            existing = (
-                s.execute(
-                    select(Batch).where(
-                        Batch.file_sha256 == sha,
-                        Batch.contract_name == contract.name,
-                        Batch.contract_version == contract.version,
-                    )
-                )
-                .scalars()
-                .one_or_none()
-            )
-        if existing is not None and existing.status in ("completed", "partial"):
-            with Session(engine) as s:
-                n = (
-                    s.execute(select(Batch).where(Batch.batch_id == existing.batch_id))
-                    .scalars()
-                    .one()
-                )
-            return {
-                "batch_id": n.batch_id,
-                "status": n.status,
-                "skipped": True,
-                "total_rows": n.total_rows,
-                "accepted_rows": n.accepted_rows,
-                "rejected_rows": n.rejected_rows,
-            }
-        batch_id = str(uuid.uuid4())
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    Batch.__table__.insert().values(
-                        batch_id=batch_id,
-                        file_name=src.name,
-                        file_sha256=sha,
-                        contract_name=contract.name,
-                        contract_version=contract.version,
-                        contract_hash=contract.hash,
-                        status="processing",
-                        started_at=_utcnow(),
-                    )
-                )
-        except IntegrityError:
-            # Lost a concurrent-upload race → return the winner as skipped.
-            with Session(engine) as s:
-                winner = (
-                    s.execute(
-                        select(Batch).where(
-                            Batch.file_sha256 == sha,
-                            Batch.contract_name == contract.name,
-                            Batch.contract_version == contract.version,
-                        )
-                    )
-                    .scalars()
-                    .one()
-                )
-            return {
-                "batch_id": winner.batch_id,
-                "status": winner.status,
-                "skipped": True,
-                "total_rows": winner.total_rows,
-                "accepted_rows": winner.accepted_rows,
-                "rejected_rows": winner.rejected_rows,
-            }
-        batch = get_batch(engine, batch_id)
-
+def _process(engine, batch_id: str, stored: Path, contract: Contract, chunk_size: int) -> dict:
+    """Structural check → chunk loop → finalize. Shared by run_pipeline and execute_batch."""
     # --- structural check ---
     problem = _check_header(stored, contract)
     if problem:
@@ -286,3 +174,153 @@ def run_pipeline(
         "accepted_rows": accepted,
         "rejected_rows": rejected,
     }
+
+
+def submit_upload(
+    file_path: str | Path,
+    contract_ref: str,
+    *,
+    engine=None,
+) -> dict:
+    """Hash + store + idempotency check + create pending batch. Returns immediately.
+
+    Used by the API: the response goes out with the new batch_id while the
+    heavy work runs in a background task via execute_batch.
+    """
+    from ingest.db.session import get_engine
+
+    engine = engine or get_engine()
+    src = Path(file_path)
+    contract: Contract = load_contract(contract_ref)
+
+    sha = sha256_file(src)
+    store_upload(src, sha)
+
+    with Session(engine) as s:
+        existing = (
+            s.execute(
+                select(Batch).where(
+                    Batch.file_sha256 == sha,
+                    Batch.contract_name == contract.name,
+                    Batch.contract_version == contract.version,
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
+    if existing is not None and existing.status in ("completed", "partial"):
+        return {
+            "batch_id": existing.batch_id,
+            "status": existing.status,
+            "skipped": True,
+            "total_rows": existing.total_rows,
+            "accepted_rows": existing.accepted_rows,
+            "rejected_rows": existing.rejected_rows,
+        }
+    batch_id = str(uuid.uuid4())
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                Batch.__table__.insert().values(
+                    batch_id=batch_id,
+                    file_name=src.name,
+                    file_sha256=sha,
+                    contract_name=contract.name,
+                    contract_version=contract.version,
+                    contract_hash=contract.hash,
+                    status="pending",
+                )
+            )
+    except IntegrityError:
+        # Lost a concurrent-upload race → return the winner as skipped.
+        with Session(engine) as s:
+            winner = (
+                s.execute(
+                    select(Batch).where(
+                        Batch.file_sha256 == sha,
+                        Batch.contract_name == contract.name,
+                        Batch.contract_version == contract.version,
+                    )
+                )
+                .scalars()
+                .one()
+            )
+        return {
+            "batch_id": winner.batch_id,
+            "status": winner.status,
+            "skipped": True,
+            "total_rows": winner.total_rows,
+            "accepted_rows": winner.accepted_rows,
+            "rejected_rows": winner.rejected_rows,
+        }
+    return {"batch_id": batch_id, "status": "pending", "skipped": False}
+
+
+def execute_batch(engine, batch_id: str, chunk_size: int | None = None) -> dict:
+    """Run the heavy work for a submitted batch (background-task entry point)."""
+    chunk_size = chunk_size or settings.chunk_size
+    batch = get_batch(engine, batch_id)
+    if batch is None:
+        raise ValueError(f"unknown batch {batch_id}")
+    contract = load_contract(f"{batch.contract_name}@v{batch.contract_version}")
+    stored = stored_path(batch)
+    if not stored.exists():
+        return _fail(engine, batch_id, f"stored raw file missing: {stored}")
+    with engine.begin() as conn:
+        conn.execute(
+            Batch.__table__.update()
+            .where(Batch.batch_id == batch_id)
+            .values(status="processing", started_at=_utcnow(), finished_at=None)
+        )
+    return _process(engine, batch_id, stored, contract, chunk_size)
+
+
+def run_pipeline(
+    file_path: str | Path,
+    contract_ref: str,
+    *,
+    reprocess_batch_id: str | None = None,
+    engine=None,
+    chunk_size: int | None = None,
+) -> dict:
+    """Run the whole flow synchronously (CLI entry point)."""
+    from ingest.db.session import get_engine
+
+    engine = engine or get_engine()
+    chunk_size = chunk_size or settings.chunk_size
+    contract: Contract = load_contract(contract_ref)
+
+    # --- reprocess path ---
+    if reprocess_batch_id:
+        batch = get_batch(engine, reprocess_batch_id)
+        if batch is None:
+            raise ValueError(f"unknown batch {reprocess_batch_id}")
+        if batch.status not in ("partial", "failed"):
+            raise ValueError(f"only partial/failed batches can be reprocessed (got {batch.status})")
+        with engine.begin() as conn:
+            conn.execute(
+                Batch.__table__.update()
+                .where(Batch.batch_id == batch.batch_id)
+                .values(
+                    status="processing",
+                    contract_name=contract.name,
+                    contract_version=contract.version,
+                    contract_hash=contract.hash,
+                    failure_reason=None,
+                    started_at=_utcnow(),
+                    finished_at=None,
+                    retry_attempts=(batch.retry_attempts + 1),
+                )
+            )
+        clear_attempt(engine, batch.batch_id)
+        batch_id = batch.batch_id
+        stored = stored_path(batch)
+        if not stored.exists():
+            return _fail(engine, batch_id, f"stored raw file missing: {stored}")
+        return _process(engine, batch_id, stored, contract, chunk_size)
+
+    src = Path(file_path)
+    submitted = submit_upload(src, contract_ref, engine=engine)
+    if submitted["skipped"]:
+        return submitted
+    return execute_batch(engine, submitted["batch_id"], chunk_size)

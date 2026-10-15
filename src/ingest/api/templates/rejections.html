@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Audit · Ingest Platform{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Rejection audit</h2>
+  <form method="get" class="inline">
+    <select name="reason_code">
+      <option value="">all reasons</option>
+      {% for c in codes %}<option {% if reason_code==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    </select>
+    <select name="contract">
+      <option value="">all contracts</option>
+      {% for c in contracts %}<option {% if contract==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    </select>
+    <input type="date" name="from" value="{{ date_from }}" aria-label="from">
+    <input type="date" name="to" value="{{ date_to }}" aria-label="to">
+    <button type="submit">Search</button>
+  </form>
+  <table>
+    <thead><tr><th>batch</th><th>file</th><th>contract</th><th>matching rejections</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr><td><a href="/batches/{{ r[0] }}">{{ r[0][:8] }}</a></td><td>{{ r[1] }}</td>
+          <td>{{ r[2] }}@v{{ r[3] }}</td><td>{{ r[4] }}</td></tr>
+    {% else %}
+      <tr><td colspan="4" class="empty">No batches match — adjust the filters.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

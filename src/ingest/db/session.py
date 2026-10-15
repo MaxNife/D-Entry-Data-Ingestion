@@ -8,7 +8,11 @@ from ingest.db.models import Base
 
 
 def get_engine(url: str | None = None):
-    return create_engine(url or settings.database_url, future=True)
+    url = url or settings.database_url
+    kwargs = {"future": True}
+    if url.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
+    return create_engine(url, **kwargs)
 
 
 engine = get_engine()

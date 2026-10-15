@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Batch {{ b.batch_id[:8] }} · Ingest Platform{% endblock %}
+{% block content %}
+<section class="panel" id="batch-header">
+  <h2>Batch {{ b.batch_id[:8] }} <span class="badge {{ status_class[b.status] }}">{{ b.status }}</span></h2>
+  <dl class="meta">
+    <div><dt>file</dt><dd>{{ b.file_name }}</dd></div>
+    <div><dt>contract</dt><dd>{{ b.contract_name }}@v{{ b.contract_version }}</dd></div>
+    <div><dt>total / accepted / rejected</dt><dd>{{ b.total_rows }} / {{ b.accepted_rows }} / {{ b.rejected_rows }}</dd></div>
+    <div><dt>retries</dt><dd>{{ b.retry_attempts }}</dd></div>
+    {% if b.failure_reason %}<div class="err"><dt>failure</dt><dd>{{ b.failure_reason }}</dd></div>{% endif %}
+  </dl>
+  <div class="row">
+    <a class="btn" href="/api/batches/{{ b.batch_id }}/reject-report.csv">Download reject report</a>
+    {% if b.status in ["partial","failed"] %}
+    <form action="/batches/{{ b.batch_id }}/reprocess" method="post" class="inline"
+          onsubmit="return confirm('Reprocess this batch under {{ b.contract_name }}@v{{ b.contract_version }}?')">
+      <button type="submit">Reprocess</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Reject reason breakdown</h2>
+  <table>
+    <thead><tr><th>reason</th><th>count</th><th>% of rejected rows</th></tr></thead>
+    <tbody>
+    {% for r in reasons %}
+      <tr><td><a href="/batches/{{ b.batch_id }}?reason_code={{ r.reason_code }}">{{ r.reason_code }}</a></td>
+          <td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+    {% else %}
+      <tr><td colspan="3" class="empty">No rejections — every row landed.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>Rejected records {% if reason_code %}(filtered: {{ reason_code }} <a href="/batches/{{ b.batch_id }}">clear</a>){% endif %}</h2>
+  <table>
+    <thead><tr><th>row</th><th>reason</th><th>message</th><th>column</th><th>value</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr><td>{{ r.row_number }}</td><td>{{ r.reason_code }}</td><td>{{ r.reason_message }}</td>
+          <td>{{ r.column_name or "—" }}</td><td>{{ r.offending_value or "—" }}</td></tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">No rejected records to show.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
