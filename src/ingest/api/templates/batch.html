@@ -2,20 +2,23 @@
 {% block title %}Batch {{ b.batch_id[:8] }} · Ingest Platform{% endblock %}
 {% block content %}
 <section class="panel" id="batch-header">
-  <h2>Batch {{ b.batch_id[:8] }} <span class="badge {{ status_class[b.status] }}">{{ b.status }}</span></h2>
+  <h2>Batch {{ b.batch_id[:8] }} {% if b.status in ["pending","processing"] %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}" hx-get="/partials/batch-status/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML">{{ b.status }}</span>{% else %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}"{% if b.failure_reason %} title="{{ b.failure_reason }}"{% endif %}>{{ b.status }}</span>{% endif %}</h2>
   <dl class="meta">
     <div><dt>file</dt><dd>{{ b.file_name }}</dd></div>
-    <div><dt>contract</dt><dd>{{ b.contract_name }}@v{{ b.contract_version }}</dd></div>
-    <div><dt>total / accepted / rejected</dt><dd>{{ b.total_rows }} / {{ b.accepted_rows }} / {{ b.rejected_rows }}</dd></div>
-    <div><dt>retries</dt><dd>{{ b.retry_attempts }}</dd></div>
+    <div><dt>contract</dt><dd data-testid="contract-version">{{ b.contract_name }}@{{ b.contract_version }}</dd></div>
+    <div><dt>total</dt><dd data-testid="counter-total">{{ b.total_rows }}</dd></div>
+    <div><dt>accepted</dt><dd data-testid="counter-accepted">{{ b.accepted_rows }}</dd></div>
+    <div><dt>rejected</dt><dd data-testid="counter-rejected">{{ b.rejected_rows }}</dd></div>
+    <div><dt>retries</dt><dd data-testid="retry-attempts">{{ b.retry_attempts }}</dd></div>
     {% if b.failure_reason %}<div class="err"><dt>failure</dt><dd>{{ b.failure_reason }}</dd></div>{% endif %}
   </dl>
+  {% if reprocess_result %}<p data-testid="reprocess-result">{{ reprocess_result }}</p>{% endif %}
   <div class="row">
-    <a class="btn" href="/api/batches/{{ b.batch_id }}/reject-report.csv">Download reject report</a>
+    <a class="btn" data-testid="download-report" href="/api/batches/{{ b.batch_id }}/reject-report.csv">Download reject report</a>
     {% if b.status in ["partial","failed"] %}
     <form action="/batches/{{ b.batch_id }}/reprocess" method="post" class="inline"
-          onsubmit="return confirm('Reprocess this batch under {{ b.contract_name }}@v{{ b.contract_version }}?')">
-      <button type="submit">Reprocess</button>
+          onsubmit="return confirm('Reprocess this batch under {{ b.contract_name }}@{{ b.contract_version }}?')">
+      <button type="submit" data-testid="reprocess-button">Reprocess</button>
     </form>
     {% endif %}
   </div>
@@ -27,10 +30,10 @@
     <thead><tr><th>reason</th><th>count</th><th>% of rejected rows</th></tr></thead>
     <tbody>
     {% for r in reasons %}
-      <tr><td><a href="/batches/{{ b.batch_id }}?reason_code={{ r.reason_code }}">{{ r.reason_code }}</a></td>
+      <tr data-testid="reason-row" data-reason-code="{{ r.reason_code }}"><td><a href="/batches/{{ b.batch_id }}?reason_code={{ r.reason_code }}">{{ r.reason_code }}</a></td>
           <td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
     {% else %}
-      <tr><td colspan="3" class="empty">No rejections — every row landed.</td></tr>
+      <tr><td colspan="3" class="empty" data-testid="empty-state">No rejections — every row landed.</td></tr>
     {% endfor %}
     </tbody>
   </table>
@@ -39,13 +42,14 @@
 <section class="panel">
   <h2>Rejected records {% if reason_code %}(filtered: {{ reason_code }} <a href="/batches/{{ b.batch_id }}">clear</a>){% endif %}</h2>
   <table>
-    <thead><tr><th>row</th><th>reason</th><th>message</th><th>column</th><th>value</th></tr></thead>
+    <thead><tr><th>row</th><th>reason</th><th>message</th><th>column</th><th>value</th><th>original</th></tr></thead>
     <tbody>
     {% for r in rows %}
-      <tr><td>{{ r.row_number }}</td><td>{{ r.reason_code }}</td><td>{{ r.reason_message }}</td>
-          <td>{{ r.column_name or "—" }}</td><td>{{ r.offending_value or "—" }}</td></tr>
+      <tr data-testid="rejection-row" data-row-number="{{ r.row_number }}"><td>{{ r.row_number }}</td><td>{{ r.reason_code }}</td><td>{{ r.reason_message }}</td>
+          <td>{{ r.column_name or "—" }}</td><td>{{ r.offending_value or "—" }}</td>
+          <td><details><summary data-testid="original-row-toggle">show</summary><code>{{ r.original_row }}</code></details></td></tr>
     {% else %}
-      <tr><td colspan="5" class="empty">No rejected records to show.</td></tr>
+      <tr><td colspan="6" class="empty" data-testid="empty-state">No rejected records to show.</td></tr>
     {% endfor %}
     </tbody>
   </table>

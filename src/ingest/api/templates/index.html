@@ -2,51 +2,52 @@
 {% block title %}Batches · Ingest Platform{% endblock %}
 {% block content %}
 <section class="cards">
-  <div class="card"><div class="num">{{ metrics.batches_today }}</div><div class="lbl">batches today</div></div>
-  <div class="card"><div class="num">{{ metrics.rows_accepted_today }}</div><div class="lbl">rows accepted today</div></div>
-  <div class="card"><div class="num">{{ metrics.rows_rejected_today }}</div><div class="lbl">rows rejected today</div></div>
-  <div class="card"><div class="num">{{ metrics.failed_today }}</div><div class="lbl">failed today</div></div>
+  <div class="card" data-testid="metric-batches-today"><div class="num">{{ metrics.batches_today }}</div><div class="lbl">batches today</div></div>
+  <div class="card" data-testid="metric-rows-accepted-today"><div class="num">{{ metrics.rows_accepted_today }}</div><div class="lbl">rows accepted today</div></div>
+  <div class="card" data-testid="metric-rows-rejected-today"><div class="num">{{ metrics.rows_rejected_today }}</div><div class="lbl">rows rejected today</div></div>
+  <div class="card" data-testid="metric-failed-batches-today"><div class="num">{{ metrics.failed_batches_today }}</div><div class="lbl">failed batches today</div></div>
 </section>
 
 <section class="panel">
   <h2>Upload</h2>
   <form action="/upload" method="post" enctype="multipart/form-data" class="inline">
-    <input type="file" name="file" required>
-    <select name="contract">{% for c in contracts %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
-    <button type="submit">Ingest</button>
+    <input type="file" name="file" required data-testid="upload-file">
+    <select name="contract" data-testid="upload-contract">{% for c in contracts %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
+    <button type="submit" data-testid="upload-submit">Ingest</button>
   </form>
+  {% if upload_message %}<p data-testid="upload-message">{{ upload_message }}</p>{% endif %}
 </section>
 
 <section class="panel">
   <h2>Batch history</h2>
   <form method="get" class="inline">
-    <input type="search" name="q" placeholder="file name or batch id" value="{{ q }}">
-    <select name="status">
+    <input type="search" name="q" placeholder="file name or batch id" value="{{ q }}" data-testid="batch-search">
+    <select name="status" data-testid="status-filter">
       <option value="">all statuses</option>
       {% for s in ["pending","processing","completed","partial","failed"] %}
       <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
     </select>
-    <select name="contract">
+    <select name="contract" data-testid="contract-filter">
       <option value="">all contracts</option>
       {% for c in contracts %}<option {% if contract==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
     </select>
-    <button type="submit">Filter</button>
+    <button type="submit" data-testid="filter-submit">Filter</button>
   </form>
   <table>
     <thead><tr><th>batch</th><th>file</th><th>contract</th><th>status</th><th>total</th><th>accepted</th><th>rejected</th><th>started</th></tr></thead>
     <tbody>
     {% for b in batches %}
-      <tr>
+      <tr data-testid="batch-row" data-batch-id="{{ b.batch_id }}">
         <td><a href="/batches/{{ b.batch_id }}">{{ b.batch_id[:8] }}</a></td>
         <td>{{ b.file_name }}</td>
-        <td>{{ b.contract_name }}@v{{ b.contract_version }}</td>
-        <td><span class="badge {{ status_class[b.status] }}" {% if b.status in ["pending","processing"] %}hx-get="/partials/batch-status/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>{{ b.status }}</span></td>
+        <td>{{ b.contract_name }}@{{ b.contract_version }}</td>
+        <td>{% if b.status in ["pending","processing"] %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}" hx-get="/partials/batch-status/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML">{{ b.status }}</span>{% else %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}"{% if b.failure_reason %} title="{{ b.failure_reason }}"{% endif %}>{{ b.status }}</span>{% endif %}</td>
         <td>{{ b.total_rows }}</td><td>{{ b.accepted_rows }}</td><td>{{ b.rejected_rows }}</td>
         <td>{{ b.started_at or "—" }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="8" class="empty">No batches yet — upload a file above.</td></tr>
+      <tr><td colspan="8" class="empty" data-testid="empty-state">No batches yet — upload a file above.</td></tr>
     {% endfor %}
     </tbody>
   </table>

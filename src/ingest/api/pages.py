@@ -37,7 +37,11 @@ def register_pages(app, eng, templates) -> None:
         q: str | None = None,
         status: str | None = None,
         contract: str | None = None,
+        uploaded: str | None = None,
+        skipped: int | None = None,
     ):
+        if contract and "@" in contract:
+            contract = contract.split("@")[0]
         stmt = select(Batch).order_by(Batch.created_at.desc()).limit(100)
         if status:
             stmt = stmt.where(Batch.status == status)
@@ -65,10 +69,15 @@ def register_pages(app, eng, templates) -> None:
                     ).scalar_one()
                     or 0
                 ),
-                "failed_today": s.execute(
+                "failed_batches_today": s.execute(
                     select(func.count()).select_from(Batch).where(Batch.status == "failed", today)
                 ).scalar_one(),
             }
+        upload_message = None
+        if uploaded:
+            upload_message = (
+                f"already processed: {uploaded[:8]}" if skipped else f"ingested: {uploaded[:8]}"
+            )
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -79,15 +88,25 @@ def register_pages(app, eng, templates) -> None:
                 "status": status or "",
                 "contract": contract or "",
                 "contracts": sorted({n for n, _ in list_contracts()}),
+                "upload_message": upload_message,
                 **ctx_common(),
             },
         )
 
     @app.get("/batches/{batch_id}", response_class=HTMLResponse)
-    def batch_page(request: Request, batch_id: str, reason_code: str | None = None):
+    def batch_page(
+        request: Request,
+        batch_id: str,
+        reason_code: str | None = None,
+        reprocessed: int | None = None,
+        before_a: int | None = None,
+        before_r: int | None = None,
+    ):
         b = get_batch(eng, batch_id)
         if b is None:
-            return HTMLResponse(f"<h1>Unknown batch {batch_id}</h1>", status_code=404)
+            return HTMLResponse(
+                f'<h1 data-testid="error-state">Unknown batch {batch_id}</h1>', status_code=404
+            )
         with sess() as s:
             counts = s.execute(
                 select(RejectedRecord.reason_code, func.count())
@@ -113,6 +132,12 @@ def register_pages(app, eng, templates) -> None:
             {"reason_code": code, "count": n, "pct": round(100 * n / n_rows, 1) if n_rows else 0.0}
             for code, n in counts
         ]
+        reprocess_result = None
+        if reprocessed and before_a is not None and before_r is not None:
+            reprocess_result = (
+                f"reprocessed: before {before_a} accepted / {before_r} rejected → "
+                f"after {b.accepted_rows} accepted / {b.rejected_rows} rejected"
+            )
         return templates.TemplateResponse(
             request,
             "batch.html",
@@ -121,6 +146,7 @@ def register_pages(app, eng, templates) -> None:
                 "reasons": reasons,
                 "rows": rows,
                 "reason_code": reason_code or "",
+                "reprocess_result": reprocess_result,
                 **ctx_common(),
             },
         )
@@ -182,9 +208,16 @@ def register_pages(app, eng, templates) -> None:
         )
 
     @app.get("/upload", response_class=HTMLResponse)
-    def upload_page(request: Request):
+    def upload_page(request: Request, uploaded: str | None = None, skipped: int | None = None):
+        upload_message = f"already processed: {uploaded[:8]}" if uploaded and skipped else None
         return templates.TemplateResponse(
-            request, "upload.html", {"contracts": sorted(list_contracts()), **ctx_common()}
+            request,
+            "upload.html",
+            {
+                "contracts": sorted(list_contracts()),
+                "upload_message": upload_message,
+                **ctx_common(),
+            },
         )
 
     @app.post("/upload")
@@ -197,26 +230,35 @@ def register_pages(app, eng, templates) -> None:
         with open(tmp_path, "wb") as f:
             shutil.copyfileobj(upload.file, f)
         await upload.close()
-        submitted = submit_upload(Path(tmp_path), contract_ref, engine=eng)
+        submitted = submit_upload(
+            Path(tmp_path), contract_ref, engine=eng, file_name=upload.filename
+        )
         Path(tmp_path).unlink(missing_ok=True)
-        if not submitted["skipped"]:
-            execute_batch(eng, submitted["batch_id"])
+        if submitted["skipped"]:
+            return RedirectResponse(
+                f"/?uploaded={submitted['batch_id']}&skipped=1", status_code=303
+            )
+        execute_batch(eng, submitted["batch_id"])
         return RedirectResponse(f"/batches/{submitted['batch_id']}", status_code=303)
 
     @app.post("/batches/{batch_id}/reprocess", response_class=HTMLResponse)
     def reprocess_form(batch_id: str, request: Request):
         b = get_batch(eng, batch_id)
         if b is None:
-            return HTMLResponse("unknown batch", status_code=404)
+            return HTMLResponse('<h1 data-testid="error-state">unknown batch</h1>', status_code=404)
         if b.status not in ("partial", "failed"):
             return HTMLResponse("only partial/failed batches", status_code=409)
+        before_a, before_r = b.accepted_rows, b.rejected_rows
         run_pipeline(
             stored_path(b),
-            f"{b.contract_name}@v{b.contract_version}",
+            b.contract_name,
             engine=eng,
             reprocess_batch_id=batch_id,
         )
-        return RedirectResponse(f"/batches/{batch_id}", status_code=303)
+        return RedirectResponse(
+            f"/batches/{batch_id}?reprocessed=1&before_a={before_a}&before_r={before_r}",
+            status_code=303,
+        )
 
     @app.get("/partials/batch-status/{batch_id}", response_class=HTMLResponse)
     def batch_status_partial(batch_id: str):

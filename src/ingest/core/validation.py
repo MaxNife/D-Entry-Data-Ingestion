@@ -27,7 +27,9 @@ class ChunkResult:
 
 
 def _check_to_code(check: str | None) -> str:
-    c = str(check or "").lower()
+    import re
+
+    c = re.sub(r"\(.*\)$", "", str(check or "").lower().strip())
     if "not_null" in c or "nullable" in c:
         return "MISSING_REQUIRED"
     if "coerce" in c or "dtype" in c or "type" in c:
@@ -99,6 +101,17 @@ def _is_num(v) -> bool:
         return False
 
 
+def _is_blank(v) -> bool:
+    if v is None:
+        return True
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        return False
+    return isinstance(v, str) and v.strip() == ""
+
+
 def _looks_like_comparison(check: str) -> bool:
     import re
 
@@ -106,12 +119,33 @@ def _looks_like_comparison(check: str) -> bool:
 
 
 def _load_custom(fn_path: str):
+    """Resolve 'pkg.mod:attr' or 'pkg.mod.attr' to a callable."""
     import importlib
 
-    mod, _, fn = fn_path.rpartition(".")
-    if not mod:
-        raise ValueError(f"custom rule must be dotted path, got {fn_path!r}")
-    return getattr(importlib.import_module(mod), fn)
+    path = fn_path.strip()
+    if ":" in path:
+        mod, _, attr = path.partition(":")
+    else:
+        mod, _, attr = path.rpartition(".")
+    if not mod or not attr:
+        raise ValueError(f"custom rule must be a dotted path, got {fn_path!r}")
+    try:
+        module = importlib.import_module(mod)
+    except ImportError as e:
+        raise ImportError(f"custom rule {fn_path!r}: cannot import {mod!r}: {e}") from e
+    try:
+        return getattr(module, attr)
+    except AttributeError:
+        raise ImportError(f"custom rule {fn_path!r}: {mod!r} has no attribute {attr!r}") from None
+
+
+def _maybe_rename(df: pd.DataFrame, contract: Contract) -> pd.DataFrame:
+    """Rename source headers to contract names on a copy (pipeline already renames)."""
+    internal = {c.name for c in contract.columns}
+    if internal & set(df.columns):
+        return df
+    mapping = {c.source_name: c.name for c in contract.columns if c.source_name in df.columns}
+    return df.rename(columns=mapping) if mapping else df
 
 
 def validate_chunk(
@@ -122,6 +156,7 @@ def validate_chunk(
 ) -> ChunkResult:
     from ingest.core.contracts import build_pandera_schema
 
+    df = _maybe_rename(df, contract)
     ref_values = ref_values or {}
     rejections: list[Rejection] = []
     bad_idx: set = set()
@@ -145,10 +180,49 @@ def validate_chunk(
             for idx in df.index[missing.fillna(False)]:
                 reject(idx, "MISSING_REQUIRED", f"{c.name} is required", c.name)
 
+    # 1b. Column attributes, element-wise (pandera only checks these when the
+    # whole column coerces, so string frames need explicit checks).
+    for c in contract.columns:
+        if c.name not in df.columns:
+            continue
+        s = df[c.name]
+        if c.in_set is not None:
+            allowed = set(c.in_set) | {str(x) for x in c.in_set}
+            for idx, v in s.items():
+                if _is_blank(v):
+                    continue
+                if v not in allowed and str(v) not in allowed:
+                    reject(idx, "NOT_IN_SET", f"{c.name} must be one of {list(c.in_set)}", c.name)
+        if c.pattern is not None:
+            import re as _re
+
+            rx = _re.compile(c.pattern)
+            for idx, v in s.items():
+                if _is_blank(v):
+                    continue
+                if not rx.search(str(v)):
+                    reject(idx, "PATTERN_MISMATCH", f"{c.name} does not match {c.pattern}", c.name)
+        if c.min is not None or c.max is not None:
+            for idx, v in s.items():
+                if _is_blank(v) or not _is_num(v):
+                    continue
+                f = float(v)
+                if (c.min is not None and f < float(c.min)) or (
+                    c.max is not None and f > float(c.max)
+                ):
+                    reject(idx, "OUT_OF_RANGE", f"{c.name} out of range", c.name)
+        if c.max_length is not None:
+            for idx, v in s.items():
+                if _is_blank(v):
+                    continue
+                if len(str(v)) > c.max_length:
+                    reject(idx, "OUT_OF_RANGE", f"{c.name} exceeds max length", c.name)
+
     # 2. Pandera schema (lazy) for types / sets / patterns / ranges.
+    # Validated on a copy: coercion must never mutate the caller's frame.
     schema = build_pandera_schema(contract)
     try:
-        schema.validate(df, lazy=True)
+        schema.validate(df.copy(), lazy=True)
     except Exception as e:  # pandera SchemaErrors
         cases = getattr(e, "failure_cases", None)
         if cases is not None:
@@ -179,9 +253,11 @@ def validate_chunk(
     # 3. Contract rules (own code/message).
     for rule in contract.rules:
         col = rule.column
-        if col not in df.columns:
-            continue
+        fn_path = rule.function or rule.custom
+        is_custom = rule.check == "custom" or fn_path is not None
         if rule.check == "exists_in":
+            if col not in df.columns:
+                continue
             valid = ref_values.get(
                 ((rule.reference or {}).get("table"), (rule.reference or {}).get("column"))
             )
@@ -193,21 +269,34 @@ def validate_chunk(
                     continue  # nulls already reported as MISSING_REQUIRED
                 if str(v) not in {str(x) for x in valid} and v not in valid:
                     reject(idx, rule.code, rule.message, col)
-        elif rule.custom or ("." in rule.check and not _looks_like_comparison(rule.check)):
-            # custom dotted path takes precedence if set; otherwise fall through to comparison
-            fn_path = rule.custom or rule.check
-            fn = _load_custom(fn_path)
-            mask = fn(df)
+        elif is_custom:
+            import warnings
+
+            path = fn_path or rule.check
+            try:
+                fn = _load_custom(path)
+            except (ImportError, ValueError) as e:
+                warnings.warn(f"skipping custom rule {rule.code}: {e}")
+                continue
+            try:
+                mask = fn(df)
+            except Exception as e:
+                warnings.warn(f"skipping custom rule {rule.code}: {e}")
+                continue
             for idx, ok in mask.items():
                 if not bool(ok):
                     reject(idx, rule.code, rule.message, col)
         else:
+            if col not in df.columns:
+                continue
             try:
                 mask = _apply_comparison_rule(df, col, rule.check)
             except ValueError:
                 continue
-            for idx, ok in mask.items():
-                if not bool(ok):
+            for idx, v in df[col].items():
+                if pd.isna(v) or (isinstance(v, str) and v.strip() == ""):
+                    continue  # nulls already reported as MISSING_REQUIRED
+                if not bool(mask.get(idx, True)):
                     reject(idx, rule.code, rule.message, col)
 
     # 4. Duplicate keys inside this chunk: keep first, reject rest.
@@ -220,6 +309,24 @@ def validate_chunk(
             reject(idx, "DUPLICATE_KEY_IN_CHUNK", f"duplicate key within chunk: {k[:16]}…", None)
         else:
             seen[k] = idx
+
+    # 5. One root cause per cell: a missing value or a type error shadows any
+    # other failure on the same (row, column) — e.g. 'abc' is TYPE_MISMATCH,
+    # not also OUT_OF_RANGE.
+    shadowed: set[tuple[int, str | None]] = {
+        (r.row_number, r.column_name)
+        for r in rejections
+        if r.reason_code in ("MISSING_REQUIRED", "TYPE_MISMATCH")
+    }
+    if shadowed:
+        rejections = [
+            r
+            for r in rejections
+            if (r.row_number, r.column_name) not in shadowed
+            or r.reason_code in ("MISSING_REQUIRED", "TYPE_MISMATCH")
+        ]
+        row_to_idx = {row_offset + p + 1: idx for p, idx in enumerate(df.index)}
+        bad_idx = {row_to_idx[n] for n in {r.row_number for r in rejections} if n in row_to_idx}
 
     rejected_numbers = {r.row_number for r in rejections}
     accepted = df.drop(index=list(bad_idx), errors="ignore")

@@ -12,9 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ingest.config import settings
+from ingest.core import loader
 from ingest.core.contracts import Contract, load_contract
 from ingest.core.hashing import sha256_file
-from ingest.core.loader import clear_attempt, fetch_ref_values, load_chunk
 from ingest.core.validation import validate_chunk
 from ingest.db.models import Batch
 
@@ -25,10 +25,12 @@ def _utcnow():
     return datetime.now(UTC)
 
 
-def store_upload(src: Path, sha: str, upload_dir: str | Path | None = None) -> Path:
+def store_upload(
+    src: Path, sha: str, upload_dir: str | Path | None = None, file_name: str | None = None
+) -> Path:
     dest_dir = Path(upload_dir or settings.upload_dir) / sha
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / src.name
+    dest = dest_dir / (file_name or src.name)
     if not dest.exists():
         shutil.copyfile(src, dest)
     return dest
@@ -124,7 +126,7 @@ def _process(engine, batch_id: str, stored: Path, contract: Contract, chunk_size
     if problem:
         return _fail(engine, batch_id, problem)
 
-    ref_values = fetch_ref_values(engine, contract)
+    ref_values = loader.fetch_ref_values(engine, contract)
     total = accepted = rejected = 0
     chunk_index = 0
     try:
@@ -133,19 +135,34 @@ def _process(engine, batch_id: str, stored: Path, contract: Contract, chunk_size
             keep = [c.name for c in contract.columns if c.name in internal.columns]
             internal = internal[keep]
             offset = total  # 0-based count of rows before this chunk
-            result = validate_chunk(internal, contract, offset, ref_values)
+            row_end = offset + len(source)
             originals = _originals(source, offset)
-            a, r = load_chunk(
-                engine,
-                batch_id=batch_id,
-                chunk_index=chunk_index,
-                row_start=offset + 1,
-                row_end=offset + len(source),
-                contract=contract,
-                accepted=result.accepted,
-                rejections=result.rejections,
-                originals=originals,
-            )
+            try:
+                result = validate_chunk(internal, contract, offset, ref_values)
+                a, r = loader.load_chunk(
+                    engine,
+                    batch_id=batch_id,
+                    chunk_index=chunk_index,
+                    row_start=offset + 1,
+                    row_end=row_end,
+                    contract=contract,
+                    accepted=result.accepted,
+                    rejections=result.rejections,
+                    originals=originals,
+                )
+            except Exception as e:  # chunk-level failure → LOAD_ERROR, continue
+                a, r = (
+                    0,
+                    loader.record_chunk_failure(
+                        engine,
+                        batch_id=batch_id,
+                        chunk_index=chunk_index,
+                        row_start=offset + 1,
+                        row_end=row_end,
+                        originals=originals,
+                        error=e,
+                    ),
+                )
             accepted += a
             rejected += r
             total += len(source)
@@ -181,6 +198,7 @@ def submit_upload(
     contract_ref: str,
     *,
     engine=None,
+    file_name: str | None = None,
 ) -> dict:
     """Hash + store + idempotency check + create pending batch. Returns immediately.
 
@@ -194,7 +212,8 @@ def submit_upload(
     contract: Contract = load_contract(contract_ref)
 
     sha = sha256_file(src)
-    store_upload(src, sha)
+    stored_name = file_name or src.name
+    store_upload(src, sha, file_name=stored_name)
 
     with Session(engine) as s:
         existing = (
@@ -223,11 +242,11 @@ def submit_upload(
             conn.execute(
                 Batch.__table__.insert().values(
                     batch_id=batch_id,
-                    file_name=src.name,
+                    file_name=stored_name,
                     file_sha256=sha,
                     contract_name=contract.name,
                     contract_version=contract.version,
-                    contract_hash=contract.hash,
+                    contract_hash=contract.contract_hash,
                     status="pending",
                 )
             )
@@ -297,22 +316,28 @@ def run_pipeline(
             raise ValueError(f"unknown batch {reprocess_batch_id}")
         if batch.status not in ("partial", "failed"):
             raise ValueError(f"only partial/failed batches can be reprocessed (got {batch.status})")
-        with engine.begin() as conn:
-            conn.execute(
-                Batch.__table__.update()
-                .where(Batch.batch_id == batch.batch_id)
-                .values(
-                    status="processing",
-                    contract_name=contract.name,
-                    contract_version=contract.version,
-                    contract_hash=contract.hash,
-                    failure_reason=None,
-                    started_at=_utcnow(),
-                    finished_at=None,
-                    retry_attempts=(batch.retry_attempts + 1),
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    Batch.__table__.update()
+                    .where(Batch.batch_id == batch.batch_id)
+                    .values(
+                        status="processing",
+                        contract_name=contract.name,
+                        contract_version=contract.version,
+                        contract_hash=contract.contract_hash,
+                        failure_reason=None,
+                        started_at=_utcnow(),
+                        finished_at=None,
+                        retry_attempts=(batch.retry_attempts + 1),
+                    )
                 )
-            )
-        clear_attempt(engine, batch.batch_id)
+        except IntegrityError as e:
+            raise ValueError(
+                f"cannot reprocess under {contract.name}@v{contract.version}: "
+                f"this file was already processed under that version ({e})"
+            ) from e
+        loader.clear_attempt(engine, batch.batch_id)
         batch_id = batch.batch_id
         stored = stored_path(batch)
         if not stored.exists():

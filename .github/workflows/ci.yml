@@ -1,0 +1,26 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ingest_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 5
+    env:
+      INGEST_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ingest_test
+      INGEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ingest_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --group dev
+      - run: uv run ruff check src
+      - run: uv run ingest contracts validate
+      - run: uv run pytest -m "not e2e"

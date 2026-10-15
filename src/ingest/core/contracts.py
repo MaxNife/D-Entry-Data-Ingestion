@@ -26,10 +26,11 @@ class ColumnSpec:
 @dataclass
 class RuleSpec:
     code: str
-    column: str
     check: str
     message: str
+    column: str | None = None
     reference: dict | None = None
+    function: str | None = None
     custom: str | None = None
 
 
@@ -42,11 +43,11 @@ class Contract:
     encoding: str = "utf-8"
     delimiter: str = ","
     target_table: str = ""
-    target_key: str | list = "row_hash"
+    key: str | list = "row_hash"
     on_conflict: str = "update"
     columns: list[ColumnSpec] = field(default_factory=list)
     rules: list[RuleSpec] = field(default_factory=list)
-    hash: str = ""
+    contract_hash: str = ""
 
     @property
     def source_names(self) -> list[str]:
@@ -54,9 +55,9 @@ class Contract:
 
     @property
     def key_columns(self) -> list[str] | None:
-        if self.target_key == "row_hash":
+        if self.key == "row_hash":
             return None
-        return [self.target_key] if isinstance(self.target_key, str) else list(self.target_key)
+        return [self.key] if isinstance(self.key, str) else list(self.key)
 
 
 def _contracts_dir(base: str | Path | None = None) -> Path:
@@ -68,7 +69,13 @@ def _contracts_dir(base: str | Path | None = None) -> Path:
 def parse_ref(ref: str) -> tuple[str, int | None]:
     if "@" in ref:
         name, v = ref.rsplit("@", 1)
-        return name, int(v.lstrip("v"))
+        v = v.strip()
+        if v.lower().startswith("v"):
+            v = v[1:]
+        try:
+            return name, int(v)
+        except ValueError:
+            raise ValueError(f"bad contract ref {ref!r}: version must be an integer") from None
     return ref, None
 
 
@@ -89,15 +96,35 @@ def latest_version(name: str, base: str | Path | None = None) -> int:
     return max(versions)
 
 
-def load_contract(ref: str, base: str | Path | None = None) -> Contract:
+def load_contract(
+    ref: str, version: int | str | None = None, base: str | Path | None = None
+) -> Contract:
+    """Load a versioned contract. Accepts 'name', 'name@version', or (name, version)."""
+    if version is not None:
+        v = str(version).strip()
+        if v.lower().startswith("v"):
+            v = v[1:]
+        ref = f"{ref}@v{v}"
     name, ver = parse_ref(ref)
     if ver is None:
         ver = latest_version(name, base)
     path = contract_file(name, ver, base)
-    raw = path.read_bytes()
-    data = yaml.safe_load(raw.decode("utf-8"))
+    if not path.exists():
+        raise FileNotFoundError(f"unknown contract {ref!r}: {path} does not exist")
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        raise FileNotFoundError(f"unknown contract {ref!r}: {e}") from e
+    try:
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path}: invalid YAML: {e}") from e
     contract = _validate_and_build(data, path)
-    contract.hash = sha256_bytes(raw)
+    if contract.version != ver:
+        raise ValueError(f"{path}: version field is {contract.version}, file name says v{ver}")
+    if contract.name != name:
+        raise ValueError(f"{path}: contract field is {contract.name!r}, directory says {name!r}")
+    contract.contract_hash = sha256_bytes(raw)
     return contract
 
 
@@ -147,18 +174,22 @@ def _validate_and_build(data: dict, path: Path) -> Contract:
     codes = set()
     col_names = {c.name for c in cols}
     for r in data.get("rules", []):
+        if not isinstance(r, dict) or "code" not in r or "check" not in r:
+            raise ValueError(f"{path}: every rule needs 'code' and 'check'")
         if r["code"] in codes:
             raise ValueError(f"{path}: duplicate rule code '{r['code']}'")
         codes.add(r["code"])
-        if r["column"] not in col_names:
-            raise ValueError(f"{path}: rule {r['code']} references unknown column '{r['column']}'")
+        col = r.get("column")
+        if col is not None and col not in col_names:
+            raise ValueError(f"{path}: rule {r['code']} references unknown column '{col}'")
         rules.append(
             RuleSpec(
                 code=r["code"],
-                column=r["column"],
+                column=col,
                 check=str(r["check"]),
                 message=r.get("message", r["code"]),
                 reference=r.get("reference"),
+                function=r.get("function"),
                 custom=r.get("custom"),
             )
         )
@@ -175,7 +206,7 @@ def _validate_and_build(data: dict, path: Path) -> Contract:
         encoding=src.get("encoding", "utf-8"),
         delimiter=src.get("delimiter", ","),
         target_table=tgt["table"],
-        target_key=tgt.get("key", "row_hash"),
+        key=tgt.get("key", "row_hash"),
         on_conflict=oc,
         columns=cols,
         rules=rules,
@@ -188,9 +219,15 @@ def build_pandera_schema(contract: Contract):
 
     fields = {}
     for c in contract.columns:
-        dtype = {"int": "int64", "float": "float64", "str": "string", "bool": "bool"}.get(
-            c.type, "string"
-        )
+        dtype = {
+            "int": "int64",
+            "float": "float64",
+            "str": "string",
+            "bool": "bool",
+            "date": "datetime64[ns]",
+            "datetime": "datetime64[ns]",
+            "decimal": "float64",
+        }.get(c.type, "string")
         checks = []
         if c.in_set is not None:
             checks.append(pa.Check.isin(c.in_set))

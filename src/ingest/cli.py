@@ -20,7 +20,11 @@ def upload(
 ):
     """Validate FILE against CONTRACT and load accepted rows."""
     init_db()
-    result = run_pipeline(file, contract)
+    try:
+        result = run_pipeline(file, contract)
+    except (FileNotFoundError, ValueError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1)
     if result["skipped"]:
         typer.echo(f"already processed: {result['batch_id']} ({result['status']})")
     else:
@@ -45,10 +49,20 @@ def reprocess(
     engine = get_engine()
     batch = get_batch(engine, batch_id)
     if batch is None:
-        raise typer.BadParameter(f"unknown batch {batch_id}")
-    ref = contract or f"{batch.contract_name}@v{batch.contract_version}"
+        typer.echo(f"error: unknown batch {batch_id}", err=True)
+        raise typer.Exit(1)
+    if batch.status not in ("partial", "failed"):
+        typer.echo(
+            f"error: only partial/failed batches can be reprocessed (got {batch.status})", err=True
+        )
+        raise typer.Exit(1)
+    ref = contract or batch.contract_name  # bare name → latest
     before = (batch.accepted_rows, batch.rejected_rows)
-    result = run_pipeline(stored_path(batch), ref, engine=engine, reprocess_batch_id=batch_id)
+    try:
+        result = run_pipeline(stored_path(batch), ref, engine=engine, reprocess_batch_id=batch_id)
+    except (FileNotFoundError, ValueError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1)
     typer.echo(
         f"{result['batch_id']} {result['status']}: before={before} "
         f"after=({result['accepted_rows']},{result['rejected_rows']})"
@@ -88,8 +102,12 @@ def contracts_validate():
         try:
             c = load_contract(f"{name}@v{version}")
             typer.echo(f"ok {name}@v{version}: {len(c.columns)} cols, {len(c.rules)} rules")
-        except (FileNotFoundError, ValueError) as e:
+        except Exception as e:  # lint must report, not crash
             typer.echo(f"INVALID {name}@v{version}: {e}")
             bad += 1
     if bad:
         raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

@@ -21,7 +21,7 @@ from ingest.core.hashing import sha256_bytes
 from ingest.db.models import TARGET_TYPE_MAP, BatchChunk, RejectedRecord
 
 
-def _norm(v):
+def _norm(v, col_type: str = "str"):
     if v is None:
         return None
     try:
@@ -29,6 +29,8 @@ def _norm(v):
             return None
     except (TypeError, ValueError):
         pass
+    if isinstance(v, pd.Timestamp):
+        return v.date() if col_type == "date" else v.to_pydatetime()
     if hasattr(v, "item"):
         try:
             return v.item()
@@ -73,7 +75,7 @@ def records_from_frame(contract: Contract, df: pd.DataFrame, batch_id: str) -> l
     now = datetime.now(UTC)
     out = []
     for _, row in df.iterrows():
-        rec = {c.name: _norm(row.get(c.name)) for c in contract.columns}
+        rec = {c.name: _norm(row.get(c.name), c.type) for c in contract.columns}
         rec["row_key"] = row_key_for(rec, contract)
         rec["batch_id"] = batch_id
         rec["loaded_at"] = now
@@ -101,6 +103,52 @@ def fetch_ref_values(engine, contract: Contract) -> dict[tuple[str, str], set]:
                 continue  # reference table missing → validation skips the rule
             out[(table, column)] = {r[0] for r in rows}
     return out
+
+
+def record_chunk_failure(
+    engine,
+    *,
+    batch_id: str,
+    chunk_index: int,
+    row_start: int,
+    row_end: int,
+    originals: dict[int, dict],
+    error: BaseException | str,
+) -> int:
+    """Mark one chunk failed and record every row in it as LOAD_ERROR.
+
+    Runs in its own transaction, separate from the failed chunk write, so the
+    pipeline can continue with the next chunk. Returns the rejected row count.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            delete(BatchChunk).where(
+                BatchChunk.batch_id == batch_id, BatchChunk.chunk_index == chunk_index
+            )
+        )
+        conn.execute(
+            BatchChunk.__table__.insert().values(
+                batch_id=batch_id,
+                chunk_index=chunk_index,
+                row_start=row_start,
+                row_end=row_end,
+                status="failed",
+                error=str(error)[:2000],
+            )
+        )
+        for rn in range(row_start, row_end + 1):
+            conn.execute(
+                RejectedRecord.__table__.insert().values(
+                    batch_id=batch_id,
+                    row_number=rn,
+                    reason_code="LOAD_ERROR",
+                    reason_message=f"chunk failed at database level: {error}"[:2000],
+                    column_name=None,
+                    offending_value=None,
+                    original_row=originals.get(rn, {}),
+                )
+            )
+    return row_end - row_start + 1
 
 
 def load_chunk(
@@ -170,35 +218,15 @@ def load_chunk(
             )
         return len(records), len({r.row_number for r in rejections})
     except Exception as e:  # DB-level chunk failure → LOAD_ERROR path
-        with engine.begin() as conn:
-            conn.execute(
-                delete(BatchChunk).where(
-                    BatchChunk.batch_id == batch_id, BatchChunk.chunk_index == chunk_index
-                )
-            )
-            conn.execute(
-                BatchChunk.__table__.insert().values(
-                    batch_id=batch_id,
-                    chunk_index=chunk_index,
-                    row_start=row_start,
-                    row_end=row_end,
-                    status="failed",
-                    error=str(e)[:2000],
-                )
-            )
-            for rn in range(row_start, row_end + 1):
-                conn.execute(
-                    RejectedRecord.__table__.insert().values(
-                        batch_id=batch_id,
-                        row_number=rn,
-                        reason_code="LOAD_ERROR",
-                        reason_message=f"chunk failed at database level: {e}"[:2000],
-                        column_name=None,
-                        offending_value=None,
-                        original_row=originals.get(rn, {}),
-                    )
-                )
-        return 0, (row_end - row_start + 1)
+        return 0, record_chunk_failure(
+            engine,
+            batch_id=batch_id,
+            chunk_index=chunk_index,
+            row_start=row_start,
+            row_end=row_end,
+            originals=originals,
+            error=e,
+        )
 
 
 def clear_attempt(engine, batch_id: str) -> None:

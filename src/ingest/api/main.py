@@ -7,6 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,9 +29,11 @@ def batch_out(b: Batch) -> dict:
     return {
         "batch_id": b.batch_id,
         "file_name": b.file_name,
+        "file_sha256": b.file_sha256,
         "contract_name": b.contract_name,
         "contract_version": b.contract_version,
         "contract_ref": f"{b.contract_name}@v{b.contract_version}",
+        "contract_hash": b.contract_hash,
         "status": b.status,
         "failure_reason": b.failure_reason,
         "total_rows": b.total_rows,
@@ -75,6 +78,10 @@ def create_app(engine=None) -> FastAPI:
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_handler(_: Request, exc: RequestValidationError):
+        return err("VALIDATION_ERROR", str(exc)[:1000], 422)
+
     def sess() -> Session:
         return Session(eng)
 
@@ -95,7 +102,7 @@ def create_app(engine=None) -> FastAPI:
         upload = form.get("file")
         contract_ref = form.get("contract") or None
         if upload is None or not hasattr(upload, "filename"):
-            return err("NO_FILE", "multipart field 'file' is required", 400)
+            return err("NO_FILE", "multipart field 'file' is required", 422)
         if not contract_ref:
             try:
                 contract_ref = default_contract()
@@ -112,7 +119,9 @@ def create_app(engine=None) -> FastAPI:
         await upload.close()
 
         try:
-            submitted = submit_upload(Path(tmp_path), contract_ref, engine=eng)
+            submitted = submit_upload(
+                Path(tmp_path), contract_ref, engine=eng, file_name=upload.filename
+            )
         except (FileNotFoundError, ValueError) as e:
             Path(tmp_path).unlink(missing_ok=True)
             return err("INVALID_CONTRACT", str(e), 400)
@@ -147,10 +156,17 @@ def create_app(engine=None) -> FastAPI:
         if status:
             stmt = stmt.where(Batch.status == status)
         if contract:
-            stmt = stmt.where(Batch.contract_name == contract)
+            if "@" in contract:
+                cname, _, cver = contract.partition("@")
+                cver = cver.lstrip("v")
+                stmt = stmt.where(Batch.contract_name == cname)
+                if cver.isdigit():
+                    stmt = stmt.where(Batch.contract_version == int(cver))
+            else:
+                stmt = stmt.where(Batch.contract_name == contract)
         if q:
             like = f"%{q}%"
-            stmt = stmt.where(Batch.file_name.like(like) | Batch.batch_id.like(like))
+            stmt = stmt.where(Batch.file_name.ilike(like) | Batch.batch_id.ilike(like))
         if date_from:
             stmt = stmt.where(Batch.created_at >= datetime.fromisoformat(date_from))
         if date_to:
@@ -279,7 +295,7 @@ def create_app(engine=None) -> FastAPI:
                 "REPROCESS_NOT_ALLOWED", f"only partial/failed batches (got {b.status})", 409
             )
         before = {"accepted_rows": b.accepted_rows, "rejected_rows": b.rejected_rows}
-        ref = (body or {}).get("contract") or f"{b.contract_name}@v{b.contract_version}"
+        ref = (body or {}).get("contract") or b.contract_name  # bare name → latest
         try:
             run_pipeline(stored_path(b), ref, engine=eng, reprocess_batch_id=batch_id)
         except ValueError as e:
@@ -345,26 +361,23 @@ def create_app(engine=None) -> FastAPI:
     # ---- contracts ----
     @app.get("/api/contracts")
     def contracts_list():
-        return {
-            "contracts": [
-                {"name": n, "version": v, "ref": f"{n}@v{v}"} for n, v in sorted(list_contracts())
-            ]
-        }
+        return [{"name": n, "version": v, "ref": f"{n}@v{v}"} for n, v in sorted(list_contracts())]
 
     @app.get("/api/contracts/{name}/{version}")
     def contract_detail(name: str, version: str):
         try:
-            c = load_contract(f"{name}@{version}")
+            c = load_contract(f"{name}@{version.lstrip('v')}")
         except (FileNotFoundError, ValueError) as e:
             return err("INVALID_CONTRACT", str(e), 404)
         return {
+            "contract": c.name,
             "name": c.name,
             "version": c.version,
             "description": c.description,
             "target_table": c.target_table,
-            "target_key": c.target_key,
+            "target_key": c.key,
             "on_conflict": c.on_conflict,
-            "hash": c.hash,
+            "hash": c.contract_hash,
             "columns": [vars(col) for col in c.columns],
             "rules": [vars(r) for r in c.rules],
         }
@@ -396,7 +409,7 @@ def create_app(engine=None) -> FastAPI:
             "batches_today": batches_today,
             "rows_accepted_today": int(acc or 0),
             "rows_rejected_today": int(rej or 0),
-            "failed_today": failed,
+            "failed_batches_today": failed,
         }
 
     # ---- dashboard pages ----
