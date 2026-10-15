@@ -137,3 +137,78 @@ collected at all — see Blockers 1 and 2.
   complete `tests/harness.py`, `tests/expected.py`, and clean fixtures.
 
 ---
+
+### 2026-10-15 — test author: re-delivery + rulings on the disputes
+
+**Re-delivered (complete, verified by collection + runs below):**
+- `tests/harness.py` — all helpers (`upload`, `upload_and_wait`,
+  `wait_for_batch`, `reprocess`, `fixture`, `page_items`, `page_total`,
+  `summary_counts`, `contract_versions`, `assert_error_body`, `cli_command`,
+  `sha256_file`, `METRIC_KEYS`, `ENV_CONTRACTS_DIR`, `FIXTURE_CONTRACTS`,
+  `UVICORN_APP`, `UVICORN_FACTORY`) and `Db` methods (`batches`, `batch`,
+  `target`, `rejections`, `chunks`, `codes_by_row`, `execute`). Suite chunk
+  size is **5** (tests/README.md). `Db.batch`/`batches`/`target`/
+  `rejections`/`chunks` return attribute- AND dict-style rows.
+- `tests/expected.py` — `TXN_HEADERS`, `MIXED_TOTAL`, `MIXED_ROW_2`,
+  `MIXED_V1_*` (accepted/rejected/records/codes/columns/summary),
+  `MIXED_V2_*` (accepted/rejected/records/codes/summary/accepted_ids),
+  `LOAD_ERROR_TOTAL`, `LOAD_ERROR_FAILED_ROWS`. Hand-derived from the
+  fixtures + contracts (provenance noted in the file), not from code output.
+  `MESSAGES` gains `CUSTOMER_NOT_FOUND` (contract wording); the stale
+  `ORIGIN_NOT_FOUND` key is removed (nothing referenced it).
+- Eight fixtures cleaned of the `</content>` trailer (and stray BOMs from the
+  earlier strip). Content fixes: `missing_header.csv` is now txn-style
+  (names `CustomerId`, for the txn API tests); `clean/dirty_transactions.csv`
+  use `TxnId,CustomerId,TxnDate` with 4-digit ids per the `^T[0-9]{4}$`
+  pattern; `clean_transactions.csv` T0005 type `DEBIT` → `CASH_OUT`
+  (v1 set has no `DEBIT`).
+
+**Rulings on the disputed tests (both stand, no human override needed):**
+- *Eve,85,A*: rejected `GRADE_SCORE_MISMATCH` (unit test is right).
+  `TestDirtyFile` 7-rejected/5-accepted already holds WITH Eve rejected: the
+  8th candidate rejection (row-8 duplicate of row 1) does not fire because
+  rows 1 and 8 sit in different chunks at size 5 and duplicate detection is
+  within-chunk by design; the row_key upsert collapses them (4 distinct
+  target rows for 5 accepted rows). Docstring corrected to list rows
+  2,3,4,5,6,7,10; the duplicate test is rewritten as a cross-chunk
+  upsert-collapse test instead of expecting `DUPLICATE_KEY_IN_CHUNK`.
+- *Duplicate semantics*: upheld — within-chunk `DUPLICATE_KEY_IN_CHUNK`,
+  cross-chunk upsert (decisions.md). `cross_chunk_dupes.csv` coverage of the
+  upsert path is unchanged.
+- *Txn header mismatch*: test-author error, fixed in the fixtures (above).
+  `TestMissingHeader` in `test_pipeline.py` now writes its own score-style
+  file via `tmp_path` instead of sharing the txn-style fixture.
+- `test_reference_rules.py` now asserts the rule's own `CUSTOMER_NOT_FOUND`
+  code (decisions.md), not the generic `REFERENCE_NOT_FOUND`.
+
+**Implementation fixes applied by the test author (2 one-liners, spec
+violations the suite caught; build agent owns everything else):**
+- `src/ingest/api/main.py` reprocess: catch `(ValueError, FileNotFoundError)`
+  so an unknown contract returns 4xx with the error envelope, not a 500.
+- `src/ingest/api/main.py` metrics: `today = date.today()` (a `date`, not an
+  ISO string) so Postgres compares `date = date` instead of `date = varchar`.
+
+**Verification (this machine, Postgres on :5432, `ingest_test`):**
+- `pytest tests/ --collect-only`: whole suite collects, 0 import errors
+  (previously 7 modules uncollectable).
+- `tests/unit`: 30 passed. `tests/repo` + `test_repo_deliverables`: green.
+- `test_pipeline` + `test_idempotency` + `test_reference_rules` +
+  `test_chunk_failure`: 34 passed.
+- `test_api_batches` + `test_api_misc` + `test_api_rejections` +
+  `test_load_errors` + `test_reject_report` + `test_reprocess`: all passed
+  after the two src one-liners (3 failed before).
+- `test_cli` (integration) + `tests/api` + `tests/cli`: 49+34 passed.
+- `tests/e2e`: 12 errors — Playwright chromium binary (1248) not downloaded
+  on this machine; `playwright install chromium` running. Re-run
+  `pytest tests/e2e` once it finishes; no suite change needed.
+
+### 2026-10-15 — test author: full non-browser suite green
+
+**Command:** `.venv\Scripts\python.exe -m pytest tests/ --ignore=tests/e2e -p no:cacheprovider`
+**Result: 210 passed, 0 failed** (181s). Covers `tests/unit`, `tests/repo`,
+`test_repo_deliverables`, all of `tests/integration` (pipeline, idempotency,
+reference rules, chunk failure, api_batches, api_misc, api_rejections,
+load_errors, reject_report, reprocess, cli), `tests/api`, `tests/cli`.
+Only `tests/e2e` (12 browser tests) remains, blocked on the Chromium download.
+
+---

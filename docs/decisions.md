@@ -20,10 +20,16 @@
 - 2026-10-15: Target tables are reflected before insert so real column types drive binding
   (e.g. `test_transactions.batch_id uuid`); accepted cells are coerced to Python types
   (`int/float/date/bool`) rather than bound as text. Fixes `LOAD_ERROR` on every chunk.
-- 2026-10-15 (pending re-delivery): the test suite arrived truncated/corrupt — `harness.py`,
-  `expected.py`, eight fixture CSVs, and 12 files carry a stray `</content>` trailer. See
-  `docs/test_logbook.md`. Implementation work on the affected tests is paused.
-- 2026-10-15 (disputed): `test_pipeline.TestDirtyFile` expects `Eve,85,A` accepted while
-  `test_validation_unit` expects it rejected; and the row-8 duplicate sits in a different
-  chunk from its original, so `DUPLICATE_KEY_IN_CHUNK` cannot be produced by within-chunk
-  detection. Logged as disputed; behaviour unchanged pending a ruling.
+- 2026-10-15 (resolved by test author): suite re-delivered complete — full
+  `harness.py`/`expected.py`, eight fixtures cleaned of the `</content>`
+  trailer (plus stray BOMs), txn fixtures realigned to `TxnId/CustomerId/
+  TxnDate` with 4-digit ids. Eve,85,A stays rejected (unit test upheld);
+  `TestDirtyFile` 7/5 holds because the row-8 duplicate is cross-chunk and
+  collapses via upsert (test rewritten accordingly). Duplicate semantics:
+  within-chunk code, cross-chunk upsert. `missing_header.csv` is txn-style;
+  score-style header tests use their own tmp file.
+- 2026-10-15 (disputed, superceded by the ruling above): ~~`test_pipeline.TestDirtyFile`
+  expects `Eve,85,A` accepted while `test_validation_unit` expects it rejected; and
+  the row-8 duplicate sits in a different chunk from its original, so
+  `DUPLICATE_KEY_IN_CHUNK` cannot be produced by within-chunk detection. Logged as
+  disputed; behaviour unchanged pending a ruling.~~

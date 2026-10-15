@@ -298,7 +298,7 @@ def create_app(engine=None) -> FastAPI:
         ref = (body or {}).get("contract") or b.contract_name  # bare name → latest
         try:
             run_pipeline(stored_path(b), ref, engine=eng, reprocess_batch_id=batch_id)
-        except ValueError as e:
+        except (ValueError, FileNotFoundError) as e:
             return err("INVALID_CONTRACT", str(e), 400)
         out = batch_out(get_batch(eng, batch_id))
         out["before"] = before
@@ -385,7 +385,7 @@ def create_app(engine=None) -> FastAPI:
     # ---- metrics ----
     @app.get("/api/metrics/summary")
     def metrics():
-        today = date.today().isoformat()
+        today = date.today()
         with sess() as s:
             batches_today = s.execute(
                 select(func.count()).select_from(Batch).where(func.date(Batch.created_at) == today)
