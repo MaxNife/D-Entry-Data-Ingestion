@@ -1,0 +1,43 @@
+{% extends "settings_base.html" %}
+{% block title %}Access tokens{% endblock %}
+{% block settings %}
+{% set me = request.state.user %}
+<div class="settings-head"><h1>Access tokens</h1><p class="lede">Personal access tokens let scripts call the HTTP API as you, with your role. Send one as <code>Authorization: Bearer &lt;token&gt;</code>.</p></div>
+{% if me.is_local %}
+<section class="set-section"><p>Sign-in is off, so the API needs no token. Tokens become available once an operator sets <code>INGEST_AUTH=on</code>.</p></section>
+{% else %}
+{% if new_token %}
+<div class="callout info token-once" role="status" data-testid="new-token">
+  {{ ui.icon("info") }}
+  <div><strong>Copy your new token now. It will not be shown again.</strong>
+    <div class="token-row"><code class="mono" data-token>{{ new_token }}</code><button type="button" class="btn sm" data-copy="{{ new_token }}">{{ ui.icon("copy") }}{{ ui.icon("check", "when-copied") }}Copy</button></div>
+  </div>
+</div>
+{% endif %}
+<section class="set-section" aria-labelledby="t-new">
+  <h2 id="t-new">Create a token</h2>
+  <form method="post" action="/settings/tokens" class="set-form inline-form">
+    <div class="field"><label for="t-name">Name</label><input id="t-name" class="input" name="name" placeholder="Nightly upload script" maxlength="80" required data-testid="token-name"></div>
+    <div class="field"><label for="t-days">Expires</label>
+      <select id="t-days" name="days"><option value="30">In 30 days</option><option value="90" selected>In 90 days</option><option value="365">In a year</option><option value="never">Never</option></select></div>
+    <div><button class="btn primary" type="submit" data-testid="token-create">Create token</button></div>
+  </form>
+</section>
+<section class="set-section" aria-labelledby="t-list">
+  <h2 id="t-list">Your tokens</h2>
+  {% if tokens %}
+  <table class="data compact">
+    <thead><tr><th>Name</th><th>Starts with</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    {% for t in tokens %}
+      <tr data-testid="token-row"><td>{{ t.name }}</td><td class="mono">{{ t.prefix }}…</td><td>{{ t.created_at|ago }}</td><td>{{ t.expires_at|utc if t.expires_at else "Never" }}</td><td>{{ t.last_used_at|ago if t.last_used_at else "Never" }}</td>
+        <td class="num"><form method="post" action="/settings/tokens/{{ t.id }}/revoke" onsubmit="return confirm('Revoke {{ t.name }}? Scripts using it will stop working.')"><button class="btn sm danger" type="submit">Revoke</button></form></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">You have no tokens.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

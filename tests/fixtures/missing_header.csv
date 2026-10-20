@@ -1,0 +1,3 @@
+TxnId,Amount,Type,TxnDate,Memo
+T0001,10.00,PAYMENT,2026-10-01,first
+T0002,20.50,TRANSFER,2026-10-01,

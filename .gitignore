@@ -1,9 +1,41 @@
+# Python
 __pycache__/
-.venv/
-data/
-*.pyc
-.env
-alembic/*.pyc
+*.py[cod]
+*.egg-info/
+build/
 dist/
-src/*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling caches and reports
+.pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local data, databases and secrets
+data/
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Browser-test artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}Validations{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Validations</h1>
+    <p class="lede">Every file checked with <strong>Validate only</strong>: what would load and what would fail, without loading anything. Open one to see its issues or to ingest the same file.</p>
+  </div>
+  {% if can(request, "ingest") %}<div class="actions"><a class="btn primary" href="/upload">{{ ui.icon("shield") }}Validate a file</a></div>{% endif %}
+</div>
+
+<section class="panel">
+  <form method="get" class="filterbar" role="search">
+    <select name="contract" aria-label="Contract" onchange="this.form.requestSubmit()" class="{{ 'is-set' if contract }}" data-testid="validations-contract">
+      <option value="">Contract: all</option>
+      {% for c in contracts %}<option value="{{ c.name }}" {% if contract == c.name %}selected{% endif %}>Contract: {{ c.name }}</option>{% endfor %}
+    </select>
+    <select name="status" aria-label="Result" onchange="this.form.requestSubmit()" class="{{ 'is-set' if status }}">
+      <option value="">Result: all</option>
+      {% for key, label in [("valid", "all rows pass"), ("invalid", "some rows fail"), ("failed", "could not read"), ("running", "still checking")] %}<option value="{{ key }}" {% if status == key %}selected{% endif %}>Result: {{ label }}</option>{% endfor %}
+    </select>
+    {% if contract or status %}<a class="btn subtle" href="/validations">{{ ui.icon("x") }}Clear</a>{% endif %}
+    <span class="hint push">{{ rows|length }} {{ "validation" if rows|length == 1 else "validations" }}</span>
+  </form>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th class="col-opt">Checked</th><th>File</th><th class="col-opt">Contract</th><th>Result</th><th class="num">Rows</th><th class="num">Failing</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr class="row-link" data-testid="validation-row">
+          <td class="nowrap cell-muted col-opt" title="{{ r.created_at|utc }}">{{ r.created_at|ago }}</td>
+          <td class="cell-file"><a class="stretch" href="/validations/{{ r.id }}"><span class="file-name">{{ r.file_name }}</span></a></td>
+          <td class="col-opt lift">{% set name, _, ver = (r.contract_ref or "").partition("@v") %}{{ ui.contract_ref(name, ver) }}</td>
+          <td>{{ ui.validation_badge(r.status) }}</td>
+          <td class="num">{{ r.total_rows|num }}</td>
+          <td class="num{% if r.rejected_rows %} is-bad{% endif %}">{{ r.rejected_rows|num }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6">{% if contract or status %}{{ ui.empty("search", "No validations match", "Try another contract or result.") }}{% else %}{{ ui.empty("shield", "No validations yet", "On Add data, choose a file and a contract, then Validate only.") }}{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "settings_base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}System{% endblock %}
+{% macro size(n) %}{% if n < 1024 * 1024 %}{{ (n / 1024)|round(1) }} KB{% elif n < 1024 ** 3 %}{{ (n / 1024 / 1024)|round(1) }} MB{% else %}{{ (n / 1024 ** 3)|round(2) }} GB{% endif %}{% endmacro %}
+{% macro yes(ok, good="Yes", bad="No", level="bad") %}{% if ok %}<span class="badge ok">{{ ui.icon("check-circle", "badge-icon") }}<span>{{ good }}</span></span>{% else %}<span class="badge {{ level }}">{{ ui.icon("warn-circle" if level == "warn" else "x-circle", "badge-icon") }}<span>{{ bad }}</span></span>{% endif %}{% endmacro %}
+{% macro show_path(p) %}<div class="mono hint path" title="{{ p }}"><bdi>{{ p }}</bdi></div>{% endmacro %}
+{% block settings %}
+<nav class="breadcrumb" aria-label="Breadcrumb"><span>Workspace admin</span>{{ ui.icon("chevron") }}<span>System</span></nav>
+<div class="settings-head"><h1>System</h1><p class="lede">Where this installation keeps its data and the limits in force. These are set by whoever runs the service, through <code>INGEST_*</code> environment variables.</p></div>
+
+<div class="settings-grid">
+  <section class="panel props" aria-labelledby="s-db">
+    <h2 class="props-title" id="s-db">Platform database</h2>
+    <dl class="kv">
+      <dt>Status</dt><dd>{{ yes(db.ok, "Reachable", "Unreachable") }}</dd>
+      <dt>Address</dt><dd class="mono">{{ db.url }}</dd>
+      {% if db.ok %}
+      <dt>Schema version</dt><dd class="mono">{{ db.revision }}</dd>
+      <dt>Runs</dt><dd>{{ db.batches|num }}</dd>
+      <dt>Rejected rows</dt><dd>{{ db.rejected_records|num }}</dd>
+      <dt>Connections</dt><dd>{{ db.connections|num }}</dd>
+      {% else %}
+      <dt>Error</dt><dd class="conn-err">{{ db.error }}</dd>
+      {% endif %}
+    </dl>
+  </section>
+
+  <section class="panel props" aria-labelledby="s-storage">
+    <h2 class="props-title" id="s-storage">Storage</h2>
+    <dl class="kv">
+      <dt>Uploaded files</dt><dd>{{ uploads.files|num }} files · {{ size(uploads.bytes) }}{{ show_path(uploads.path) }}</dd>
+      <dt>Validations</dt><dd>{{ validations.files|num }} files · {{ size(validations.bytes) }}{{ show_path(validations.path) }}</dd>
+      <dt>Contracts</dt><dd>{{ contract_versions|num }} versions · {{ yes(contracts_writable, "Writable", "Read-only") }}{{ show_path(contracts_dir) }}</dd>
+    </dl>
+    {% if not contracts_writable %}<p class="hint">Contracts cannot be created or edited from the app while this folder is read-only.</p>{% endif %}
+  </section>
+
+  <section class="panel props" aria-labelledby="s-sec">
+    <h2 class="props-title" id="s-sec">Security</h2>
+    <dl class="kv">
+      <dt>Password key</dt><dd>{% if secret_source == "not created yet" %}Created when the first connection is saved{% else %}From {{ secret_source }}{% endif %}{% if secret_source == "key file" %}{{ show_path(key_file) }}{% endif %}</dd>
+      <dt>Platform tables</dt><dd>{% if query_role %}{{ yes(true, "Blocked by the database") }}<div class="hint">SQL editor queries run as <span class="mono">{{ query_role }}</span>, which cannot read accounts, tokens, the audit log, settings or connections.</div>{% else %}{{ yes(false, "", "Blocked by name only", "warn") }}<div class="hint">The editor refuses queries that name these tables. For the database to enforce it too, run the migrations as a user allowed to create roles, or set <code>INGEST_QUERY_ROLE</code>.</div>{% endif %}</dd>
+      <dt>Sign-in</dt><dd>{% if request.state.auth_on %}{{ yes(true, "Required") }}{% else %}{{ yes(false, "", "Off", "warn") }}<div class="hint">Anyone who can reach this address acts as an admin. Set <code>INGEST_AUTH=on</code>.</div>{% endif %}</dd>
+    </dl>
+    {% if secret_source == "key file" %}<p class="hint">Back up the key file. Without it, saved connection passwords must be entered again.</p>{% endif %}
+  </section>
+
+  <section class="panel props" aria-labelledby="s-drv">
+    <h2 class="props-title" id="s-drv">Database drivers</h2>
+    <dl class="kv">
+      {% for label, ok in drivers.items() %}<dt>{{ label }}</dt><dd>{{ yes(ok, "Installed", "Not installed") }}</dd>{% endfor %}
+    </dl>
+  </section>
+
+  <section class="panel props" aria-labelledby="s-lim">
+    <h2 class="props-title" id="s-lim">Limits</h2>
+    <dl class="kv">{% for label, value in limits %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
+  </section>
+
+  <section class="panel props" aria-labelledby="s-ver">
+    <h2 class="props-title" id="s-ver">Version</h2>
+    <dl class="kv">
+      <dt>Ingest Platform</dt><dd class="mono">{{ app_version }}</dd>
+      <dt>Python</dt><dd class="mono">{{ python }}</dd>
+    </dl>
+  </section>
+</div>
+{% endblock %}

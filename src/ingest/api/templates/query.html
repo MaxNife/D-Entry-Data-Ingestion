@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}SQL editor{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/vendor/codemirror/codemirror.min.css">
+<link rel="stylesheet" href="/static/vendor/codemirror/addon_hint_show-hint.min.css">
+<h1 class="sr-only">SQL editor</h1>
+<div class="ide" data-sql-ide data-autorun="{{ 1 if autorun else 0 }}">
+  <script type="application/json" data-initial>{{ {"sql": sql, "db": db}|tojson }}</script>
+
+  <aside class="ide-explorer" aria-label="Tables">
+    <select class="ide-db" data-db aria-label="Database" data-testid="sql-db">
+      <option value="">Platform database</option>
+      {% for c in connections %}<option value="{{ c.name }}" {% if db == c.name %}selected{% endif %}>{{ c.name }} · {{ kinds[c.kind].label }}</option>{% endfor %}
+    </select>
+    <label class="search sm">{{ ui.icon("search") }}<input type="search" placeholder="Filter tables" aria-label="Filter tables" data-obj-filter></label>
+    <div class="obj-tree" data-tree data-testid="sql-tree" aria-busy="true">
+      <div class="skeleton-list" aria-hidden="true">{% for _ in range(7) %}<span class="skeleton"></span>{% endfor %}</div>
+    </div>
+  </aside>
+
+  <section class="ide-main">
+    <div class="ide-toolbar">
+      <button type="button" class="btn primary sm" data-run data-testid="sql-run" title="Run the statement at the cursor, or the selected text (Ctrl+Enter)">{{ ui.icon("play") }}Run</button>
+      <span class="hint">Ctrl + Enter · read-only</span>
+      <span class="push"></span>
+      <details class="menu" data-recent-menu>
+        <summary class="btn subtle sm">Recent{{ ui.icon("chevron-down") }}</summary>
+        <div class="menu-pop" data-recent><span class="hint">Queries you run appear here.</span></div>
+      </details>
+      {% if can(request, "download") %}
+      <details class="menu" data-export-menu>
+        <summary class="btn sm" data-testid="sql-export">{{ ui.icon("download") }}Export{{ ui.icon("chevron-down") }}</summary>
+        <div class="menu-pop" role="menu">
+          {% for key, label in [("csv", "CSV"), ("xlsx", "Excel"), ("json", "JSON"), ("parquet", "Parquet")] %}
+          <a role="menuitem" href="#" data-export="{{ key }}"><strong>{{ label }}</strong><span class="hint">All rows of the last query, up to 100,000</span></a>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+
+    <div class="ide-editor" data-testid="sql-editor"><textarea data-editor aria-label="SQL"></textarea></div>
+
+    <div class="ide-results">
+      <div class="ide-results-head"><strong>Results</strong><span class="hint" data-testid="sql-count" data-row-info></span></div>
+      <div class="grid-wrap" data-grid>
+        <div class="ide-empty">{{ ui.empty("terminal", "Run a query to see results", "Write a SELECT and press Ctrl+Enter, or click Top 100 next to a table.") }}</div>
+      </div>
+      <div class="ide-running" data-running hidden role="status">
+        <span class="spinner" aria-hidden="true"></span><strong>Running query…</strong><span class="mono" data-run-timer>0.0 s</span>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="/static/vendor/codemirror/codemirror.min.js"></script>
+<script src="/static/vendor/codemirror/mode_sql_sql.min.js"></script>
+<script src="/static/vendor/codemirror/addon_hint_show-hint.min.js"></script>
+<script src="/static/vendor/codemirror/addon_hint_sql-hint.min.js"></script>
+<script src="/static/vendor/codemirror/addon_edit_matchbrackets.min.js"></script>
+<script src="/static/sql-editor.js"></script>
+{% endblock %}

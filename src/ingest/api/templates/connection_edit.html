@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set editing = mode == "edit" %}
+{% block title %}{{ ("Edit " ~ data.name) if editing else "New connection" }}{% endblock %}
+{% block content %}
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/connections">Connections</a>{{ ui.icon("chevron") }}<span>{{ data.name if editing else "New" }}</span></nav>
+<div class="page-head">
+  <div>
+    <h1>{{ ("Edit " ~ data.name) if editing else "New connection" }}</h1>
+    <p class="lede">The password is encrypted before it is stored and is never shown again. {% if editing %}Leave it blank to keep the current one.{% endif %}</p>
+  </div>
+</div>
+{% if error %}<div class="flash error" role="alert" data-testid="connection-error">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+
+<form method="post" action="/connections/save" class="panel conn-form" data-conn-form>
+  <input type="hidden" name="original" value="{{ data.name if editing else '' }}">
+  <div class="panel-body form-grid">
+    <fieldset class="field span-3"><legend>Database type</legend>
+      <div class="kind-cards">
+        {% for key, k in kinds.items() %}
+        <label class="kind-card">
+          <input type="radio" name="kind" value="{{ key }}" data-kind data-port="{{ k.port or '' }}" {% if (data.kind or "postgresql") == key %}checked{% endif %}>
+          <span class="kind-name">{{ k.label }}</span>
+          {% if not drivers[key] %}<span class="hint">driver not installed{% if key == "mssql" %}: uv sync --extra sqlserver{% endif %}</span>{% endif %}
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <div class="field"><label for="c-name">Name</label><input id="c-name" class="input mono" name="name" value="{{ data.name or '' }}" required pattern="[a-z][a-z0-9_]*" placeholder="warehouse" data-testid="conn-name"><div class="hint">How contracts and the SQL editor refer to it.</div></div>
+    <div class="field span-2" data-server><label for="c-host">Host</label><input id="c-host" class="input mono" name="host" value="{{ data.host or '' }}" placeholder="db.internal or 10.0.0.5" data-testid="conn-host"></div>
+    <div class="field" data-server><label for="c-port">Port</label><input id="c-port" class="input mono" name="port" value="{{ data.port or '' }}" inputmode="numeric" data-testid="conn-port"></div>
+    <div class="field" data-db-field><label for="c-db"><span data-server>Database</span><span data-file>SQLite file path</span></label><input id="c-db" class="input mono" name="database" value="{{ data.database or '' }}" required data-testid="conn-db"><div class="hint" data-file>A path on the server running Ingest, e.g. <code>data/warehouse.db</code>. Created if missing.</div></div>
+    <div class="field" data-server><label for="c-user">User</label><input id="c-user" class="input mono" name="username" value="{{ data.username or '' }}" autocomplete="off" data-testid="conn-user"></div>
+    <div class="field" data-server><label for="c-pass">Password</label><input id="c-pass" class="input" type="password" name="password" autocomplete="new-password" placeholder="{{ '•••••••• (unchanged)' if data.has_password else '' }}" data-testid="conn-pass"></div>
+  </div>
+  <div class="panel-body conn-test">
+    <button type="button" class="btn" hx-post="/connections/test" hx-target="#conn-test-result" hx-include="[data-conn-form]" data-testid="conn-test">{{ ui.icon("plug") }}Test connection</button>
+    <div id="conn-test-result" role="status"></div>
+  </div>
+  <div class="savebar inset">
+    <a class="btn subtle" href="{{ '/connections/' ~ data.name if editing else '/connections' }}">Cancel</a>
+    {% if editing %}<button type="submit" form="delete-conn" class="btn danger">{{ ui.icon("trash") }}Delete</button>{% endif %}
+    <button type="submit" class="btn primary" data-testid="conn-save">{{ ui.icon("check") }}Save and test</button>
+  </div>
+</form>
+{% if editing %}<form id="delete-conn" method="post" action="/connections/{{ data.name }}/delete" onsubmit="return confirm('Delete the {{ data.name }} connection?')"></form>{% endif %}
+<script>
+(function () {
+  var form = document.querySelector("[data-conn-form]");
+  function sync(fromUser) {
+    var radio = form.querySelector("[data-kind]:checked"), file = radio.value === "sqlite";
+    form.querySelectorAll("[data-server]").forEach(function (el) { el.hidden = file; });
+    form.querySelectorAll("[data-file]").forEach(function (el) { el.hidden = !file; });
+    var port = form.querySelector("#c-port");
+    if (fromUser && radio.getAttribute("data-port")) port.value = radio.getAttribute("data-port");
+  }
+  form.addEventListener("change", function (e) { if (e.target.matches("[data-kind]")) sync(true); });
+  sync(false);
+})();
+</script>
+{% endblock %}

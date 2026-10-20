@@ -14,13 +14,34 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 5
+      # A SQL Server destination for tests_platform (connections to external databases).
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Ingest_Test_2026!
+        ports: ["1433:1433"]
     env:
       INGEST_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ingest_test
       INGEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ingest_test
+      INGEST_TEST_MSSQL: "127.0.0.1:1433:sa:Ingest_Test_2026!"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --group dev
+      - run: uv sync --group dev --extra sqlserver
       - run: uv run ruff check src
       - run: uv run ingest contracts validate
-      - run: uv run pytest -m "not e2e"
+      # The browser (e2e) tests are part of the suite; install Chromium so the
+      # mandate's `pytest` (no marker filter) can run end to end.
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest
+      # Workspace features (contracts from the UI, fixing rows, dry runs, tables, SQL,
+      # connections). Kept apart from tests/, which the test author owns.
+      - name: wait for SQL Server
+        run: |
+          for i in $(seq 1 30); do
+            uv run python -c "import pymssql; pymssql.connect(server='127.0.0.1', port=1433, user='sa', password='Ingest_Test_2026!', login_timeout=3)" && exit 0
+            sleep 3
+          done
+          exit 1
+      - run: uv run pytest tests_platform

@@ -1,0 +1,25 @@
+<!doctype html>
+{% set ws = request.state.settings %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}Sign in{% endblock %} · {{ ws.workspace_name }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232272b4'/%3E%3Cpath d='M12 5v8M8.5 9.5 12 13l3.5-3.5M5 15v2.5A1.5 1.5 0 0 0 6.5 19h11a1.5 1.5 0 0 0 1.5-1.5V15' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-page">
+{% import "_macros.html" as ui %}
+<main class="auth-card" id="main">
+  <div class="auth-brand"><span class="brand-mark" aria-hidden="true">{{ ui.icon("upload") }}</span><span class="brand-name">{{ ws.workspace_name }}</span></div>
+  {% block content %}{% endblock %}
+</main>
+<script>
+document.addEventListener("submit", function (e) {
+  var b = e.target.querySelector("button[type=submit]");
+  if (b) setTimeout(function () { b.disabled = true; b.classList.add("is-busy"); }, 0);
+});
+</script>
+</body>
+</html>

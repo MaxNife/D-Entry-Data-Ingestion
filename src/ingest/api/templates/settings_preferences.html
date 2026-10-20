@@ -1,0 +1,16 @@
+{% extends "settings_base.html" %}
+{% block title %}Preferences{% endblock %}
+{% block settings %}
+<div class="settings-head"><h1>Preferences</h1><p class="lede">How the app looks for you. Other people's settings are not affected.</p></div>
+{% if saved %}<div class="flash info" role="status">{{ ui.icon("check") }}<span>Preferences saved</span></div>{% endif %}
+<section class="set-section" aria-labelledby="pr-look">
+  <h2 id="pr-look">Appearance</h2>
+  <form method="post" action="/settings/preferences" class="set-row">
+    <div class="set-label"><strong>Theme</strong><span class="hint">Light, dark, or follow your device.</span></div>
+    <div class="set-control inline">
+      <select name="theme" data-testid="pref-theme">{% for key, label in themes.items() %}<option value="{{ key }}" {% if theme(request) == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      <button class="btn" type="submit" data-testid="pref-save">Save</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set editing = mode == "edit" %}
+{% block title %}{{ ("Edit " ~ spec.contract) if editing else "New contract" }}{% endblock %}
+{% block content %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/contracts">Contracts</a>{{ ui.icon("chevron") }}
+  {% if editing %}<a href="/contracts/{{ spec.contract }}">{{ spec.contract }}</a>{{ ui.icon("chevron") }}<span>Edit</span>{% else %}<span>New</span>{% endif %}
+</nav>
+<div class="page-head">
+  <div>
+    <h1>{{ ("Edit " ~ spec.contract) if editing else "New contract" }}</h1>
+    <p class="lede">{% if editing %}Saving writes <strong>v{{ next_version }}</strong>. Earlier versions never change, so past runs keep the exact rules they used.{% else %}Describe the file you expect: its headers, the type and checks for each column, and the table its rows load into.{% endif %}</p>
+  </div>
+</div>
+
+{% if error %}<div class="flash error" role="alert" data-testid="contract-error">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+{% if note %}<div class="flash info" role="status">{{ ui.icon("info") }}<span>{{ note }}</span></div>{% endif %}
+
+{% if not editing %}
+<section class="panel" aria-labelledby="infer-title">
+  <div class="panel-head">
+    <span class="source-icon">{{ ui.icon("wand") }}</span>
+    <div><h2 id="infer-title">Start from a sample file</h2><div class="hint">Headers become columns; types and required flags are guessed from up to 5,000 rows.</div></div>
+  </div>
+  <form class="panel-body infer-row" action="/contracts/infer" method="post" enctype="multipart/form-data">
+    <label class="dropzone" data-dropzone>
+      <input type="file" name="file" required accept=".csv,.xlsx,.xls" data-testid="infer-file">
+      <span class="dz-icon">{{ ui.icon("upload") }}</span>
+      <span class="dz-text"><span class="dz-title" data-dz-title>Drop a sample file or <u>browse</u></span><span class="dz-sub" data-dz-sub>CSV or Excel</span></span>
+    </label>
+    <div class="field"><label for="infer-name">Contract name</label><input id="infer-name" class="input" name="name" placeholder="from the file name" pattern="[a-z][a-z0-9_]*"></div>
+    <button type="submit" class="btn">{{ ui.icon("wand") }}Draft contract</button>
+  </form>
+</section>
+{% endif %}
+
+<form action="/contracts/save" method="post" id="contract-form" class="editor" data-contract-editor>
+  <input type="hidden" name="mode" value="{{ mode }}">
+  <input type="hidden" name="editor" value="form" data-editor-mode>
+  <input type="hidden" name="spec_json" data-spec-json>
+  <script type="application/json" data-spec>{{ spec|tojson }}</script>
+  <script type="application/json" data-types>{{ types|tojson }}</script>
+
+  <div class="tabs" role="tablist">
+    <a href="#" role="tab" aria-selected="true" data-tab="form">Form</a>
+    <a href="#" role="tab" aria-selected="false" data-tab="yaml">YAML</a>
+  </div>
+
+  <div data-pane="form">
+    <section class="panel">
+      <div class="panel-head"><h2>Basics</h2></div>
+      <div class="panel-body form-grid">
+        <div class="field"><label for="f-name">Name</label>
+          <input id="f-name" class="input mono" data-f="contract" value="{{ spec.contract }}" {% if editing %}readonly{% endif %} required pattern="[a-z][a-z0-9_]*" placeholder="customer_orders">
+          <div class="hint">Lowercase letters, digits and underscores. Used to choose this contract when uploading, and in the API and CLI.</div></div>
+        <div class="field span-2"><label for="f-desc">Description</label><input id="f-desc" class="input" data-f="description" value="{{ spec.description }}" placeholder="What this file is and where it comes from"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Source file</h2></div>
+      <div class="panel-body form-grid">
+        <fieldset class="field"><legend>Formats</legend>
+          <label class="check"><input type="checkbox" data-format="csv" {% if "csv" in spec.source.formats %}checked{% endif %}> CSV</label>
+          <label class="check"><input type="checkbox" data-format="xlsx" {% if "xlsx" in spec.source.formats %}checked{% endif %}> Excel</label>
+        </fieldset>
+        <div class="field"><label for="f-enc">Encoding</label>
+          <select id="f-enc" data-f="source.encoding">{% for e in ["utf-8", "utf-8-sig", "latin-1", "cp1252"] %}<option {% if spec.source.encoding == e %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="f-delim">Delimiter</label>
+          <select id="f-delim" data-f="source.delimiter">{% for v, label in [(",", "Comma ,"), (";", "Semicolon ;"), ("\t", "Tab"), ("|", "Pipe |")] %}<option value="{{ v }}" {% if spec.source.delimiter == v %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Target table</h2><span class="hint">created on first load if it does not exist</span></div>
+      <div class="panel-body form-grid">
+        <div class="field"><label for="f-table">Table</label>
+          <input id="f-table" class="input mono" data-f="target.table" value="{{ spec.target.table }}" list="existing-tables" required placeholder="customer_orders">
+          <datalist id="existing-tables">{% for t in existing_tables %}<option value="{{ t }}">{% endfor %}</datalist>
+          <div class="hint">Pick an existing table to keep collecting into it, or name a new one.</div></div>
+        <div class="field"><label for="f-db">Database</label>
+          <select id="f-db" data-f="target.connection" data-testid="contract-db">
+            <option value="">Platform database</option>
+            {% for c in connections %}<option value="{{ c.name }}" {% if spec.target.connection == c.name %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+          </select>
+          <div class="hint">{% if connections %}Or load accepted rows into one of your own databases.{% else %}<a href="/connections/new">Add a connection</a> to load into your own database.{% endif %}</div></div>
+        <div class="field"><label for="f-conflict">When a key already exists</label>
+          <select id="f-conflict" data-f="target.on_conflict"><option value="update" {% if spec.target.on_conflict == "update" %}selected{% endif %}>Update the row</option><option value="skip" {% if spec.target.on_conflict == "skip" %}selected{% endif %}>Keep the existing row</option></select></div>
+        <fieldset class="field span-3"><legend>Row key</legend>
+          <label class="check"><input type="radio" name="keymode" value="hash" data-keymode {% if spec.target.key is string %}checked{% endif %}> No natural key: hash the whole row</label>
+          <label class="check"><input type="radio" name="keymode" value="cols" data-keymode {% if spec.target.key is not string %}checked{% endif %}> These columns identify a row:</label>
+          <div class="key-cols" data-key-cols></div>
+          <div class="hint">Re-uploading a row with the same key updates it instead of adding a duplicate.</div>
+        </fieldset>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Columns</h2><span class="hint" data-col-count></span><button type="button" class="btn sm push" data-add-col>{{ ui.icon("plus") }}Add column</button></div>
+      <div class="table-wrap">
+        <table class="data grid-edit">
+          <thead><tr><th>File header</th><th>Column</th><th>Type</th><th>Required</th><th>One of</th><th>Pattern</th><th>Min</th><th>Max</th><th>Max length</th><th><span class="sr-only">Remove</span></th></tr></thead>
+          <tbody data-cols></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Row rules</h2><span class="hint">extra checks with their own reason codes</span><button type="button" class="btn sm push" data-add-rule>{{ ui.icon("plus") }}Add rule</button></div>
+      <div class="table-wrap">
+        <table class="data grid-edit">
+          <thead><tr><th>Reason code</th><th>Column</th><th>Check</th><th>Expression / reference</th><th>Message</th><th><span class="sr-only">Remove</span></th></tr></thead>
+          <tbody data-rules></tbody>
+        </table>
+      </div>
+      <div class="panel-body hint" data-no-rules>No rules yet. Column checks above already cover required, type, sets, patterns and ranges.</div>
+    </section>
+  </div>
+
+  <div data-pane="yaml" hidden>
+    <section class="panel">
+      <div class="panel-head"><h2>YAML</h2><span class="hint">saving from this tab uses the YAML below, not the form</span></div>
+      <textarea class="code" name="spec_yaml" rows="28" spellcheck="false" data-yaml>{{ spec_yaml }}</textarea>
+    </section>
+  </div>
+
+  <div class="savebar">
+    <a class="btn subtle" href="{{ '/contracts/' ~ spec.contract if editing else '/contracts' }}">Cancel</a>
+    <button type="submit" class="btn primary" data-testid="contract-save">{{ ui.icon("check") }}Save as v{{ next_version }}</button>
+  </div>
+</form>
+<script src="/static/contract-editor.js" defer></script>
+{% endblock %}

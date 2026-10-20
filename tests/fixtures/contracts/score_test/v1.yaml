@@ -1,0 +1,32 @@
+contract: score_test
+version: 1
+description: Test score feed with no natural key (row_hash) and on_conflict skip (test fixture, do not edit)
+source:
+  formats: [csv]
+  encoding: utf-8
+  delimiter: ","
+target:
+  table: test_scores
+  key: row_hash
+  on_conflict: skip
+columns:
+  - name: name
+    source_name: Name
+    type: str
+    required: true
+  - name: score
+    source_name: Score
+    type: int
+    required: true
+    min: 0
+    max: 100
+  - name: grade
+    source_name: Grade
+    type: str
+    required: false
+    in_set: [A, B, C]
+rules:
+  - code: GRADE_SCORE_MISMATCH
+    check: custom
+    function: custom_rules.grade_a_requires_90
+    message: grade A requires a score of at least 90

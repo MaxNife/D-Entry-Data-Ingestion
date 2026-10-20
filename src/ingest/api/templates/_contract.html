@@ -1,0 +1,61 @@
+{# Contract preview for the upload page (also served as an HTMX partial). #}
+{% import "_macros.html" as ui %}
+{% if preview %}
+{% set c = preview %}
+<div class="contract">
+  <div class="contract-head">
+    {{ ui.contract_ref(c.name, c.version) }}
+    {% if c.description %}<p>{{ c.description }}</p>{% endif %}
+    <div class="contract-facts">
+      <span>Loads into <code>{{ c.target_table }}</code></span>
+      <span>Key <code>{{ c.key if c.key is string else c.key|join(", ") }}</code></span>
+      <span>On conflict: {{ c.on_conflict }}</span>
+      <span>{{ c.source_formats|join(", ")|upper }} · {{ c.encoding }}</span>
+    </div>
+  </div>
+  <div class="table-wrap">
+  <table class="data compact">
+    <thead><tr><th>Header</th><th>Type</th><th>Checks</th></tr></thead>
+    <tbody>
+    {% for col in c.columns %}
+      <tr>
+        <td class="mono"><strong>{{ col.source_name }}</strong>{% if col.source_name != col.name %}<span class="cell-muted"> → {{ col.name }}</span>{% endif %}</td>
+        <td><span class="type">{{ col.type }}</span></td>
+        <td class="checks">
+          {% if col.required %}<span class="tag strong">required</span>{% endif %}
+          {% if col.in_set %}<span class="tag">one of {{ col.in_set|join(", ") }}</span>{% endif %}
+          {% if col.pattern %}<span class="tag mono">{{ col.pattern }}</span>{% endif %}
+          {% if col.min is not none %}<span class="tag">≥ {{ col.min }}</span>{% endif %}
+          {% if col.max is not none %}<span class="tag">≤ {{ col.max }}</span>{% endif %}
+          {% if col.max_length %}<span class="tag">≤ {{ col.max_length }} chars</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if c.rules %}
+  <div class="contract-rules">
+    <div class="section-label">Rules</div>
+    <ul>
+      {% for r in c.rules %}<li><span class="chip">{{ r.code }}</span> {{ r.message }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <div class="contract-foot"><a href="/contracts/{{ c.name }}?v={{ c.version }}">Open {{ c.name }} in the catalog →</a></div>
+  <div class="recent-val" data-testid="recent-validations">
+    <div class="section-label">Recent validations against {{ c.name }}<a class="hint push" href="/validations?contract={{ c.name }}">All →</a></div>
+    {% if validations %}
+    <ul class="val-list">
+      {% for r in validations[:5] %}
+      <li><a href="/validations/{{ r.id }}"><span class="file-name">{{ r.file_name }}</span><span class="hint">{{ r.contract_ref }} · {{ r.total_rows|num }} rows{% if r.rejected_rows %}, {{ r.rejected_rows|num }} failing{% endif %} · {{ r.created_at|ago }}</span></a>{{ ui.validation_badge(r.status) }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="hint">No file has been validated against {{ c.name }} yet.</p>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div class="panel-body">{{ ui.empty("file", "Pick a contract", "Its columns and checks will show here.") }}</div>
+{% endif %}

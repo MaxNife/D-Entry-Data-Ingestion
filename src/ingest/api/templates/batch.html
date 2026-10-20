@@ -1,57 +1,266 @@
 {% extends "base.html" %}
-{% block title %}Batch {{ b.batch_id[:8] }} · Ingest Platform{% endblock %}
+{% import "_macros.html" as ui %}
+{% block title %}{{ b.file_name }}{% endblock %}
 {% block content %}
-<section class="panel" id="batch-header">
-  <h2>Batch {{ b.batch_id[:8] }} {% if b.status in ["pending","processing"] %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}" hx-get="/partials/batch-status/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML">{{ b.status }}</span>{% else %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}"{% if b.failure_reason %} title="{{ b.failure_reason }}"{% endif %}>{{ b.status }}</span>{% endif %}</h2>
-  <dl class="meta">
-    <div><dt>file</dt><dd>{{ b.file_name }}</dd></div>
-    <div><dt>contract</dt><dd data-testid="contract-version">{{ b.contract_name }}@{{ b.contract_version }}</dd></div>
-    <div><dt>total</dt><dd data-testid="counter-total">{{ b.total_rows }}</dd></div>
-    <div><dt>accepted</dt><dd data-testid="counter-accepted">{{ b.accepted_rows }}</dd></div>
-    <div><dt>rejected</dt><dd data-testid="counter-rejected">{{ b.rejected_rows }}</dd></div>
-    <div><dt>retries</dt><dd data-testid="retry-attempts">{{ b.retry_attempts }}</dd></div>
-    {% if b.failure_reason %}<div class="err"><dt>failure</dt><dd>{{ b.failure_reason }}</dd></div>{% endif %}
-  </dl>
-  {% if reprocess_result %}<p data-testid="reprocess-result">{{ reprocess_result }}</p>{% endif %}
-  <div class="row">
-    <a class="btn" data-testid="download-report" href="/api/batches/{{ b.batch_id }}/reject-report.csv">Download reject report</a>
-    {% if b.status in ["partial","failed"] %}
-    <form action="/batches/{{ b.batch_id }}/reprocess" method="post" class="inline"
-          onsubmit="return confirm('Reprocess this batch under {{ b.contract_name }}@{{ b.contract_version }}?')">
-      <button type="submit" data-testid="reprocess-button">Reprocess</button>
+{% set settled = b.accepted_rows + b.rejected_rows %}
+<div id="batch-live"{% if live %} data-quiet hx-get="/batches/{{ b.batch_id }}" hx-trigger="every 1.5s" hx-select="#batch-live" hx-swap="outerHTML"{% endif %}>
+
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/">Runs</a>{{ ui.icon("chevron") }}<a href="/?contract={{ b.contract_name }}">{{ b.contract_name }}</a>{{ ui.icon("chevron") }}<span class="mono">{{ b.batch_id[:8] }}</span>
+</nav>
+
+<div class="page-head">
+  <div class="head-main">
+    <div class="title-row">
+      <span class="title-icon">{{ ui.icon("file") }}</span>
+      <h1 class="title-file" title="{{ b.file_name }}">{{ b.file_name }}</h1>
+      {{ ui.status_badge(b) }}
+    </div>
+  </div>
+  <div class="actions">
+    {% set dl = can(request, "download") %}{% set ing = can(request, "ingest") %}
+    {% if b.rejected_rows and b.status in ["completed", "partial"] %}
+    {% if dl %}
+    <details class="menu">
+      <summary class="btn" data-testid="rejected-rows-menu">{{ ui.icon("download") }}Rejected rows{{ ui.icon("chevron-down") }}</summary>
+      <div class="menu-pop" role="menu">
+        <a role="menuitem" href="/api/batches/{{ b.batch_id }}/rejected-rows?format=csv" download data-testid="rejected-rows-csv"><strong>As the original file · CSV</strong><span class="hint">Same headers and values; fix them and upload again</span></a>
+        <a role="menuitem" href="/api/batches/{{ b.batch_id }}/rejected-rows?format=xlsx" download><strong>As the original file · Excel</strong><span class="hint">Open in Excel, fix, save, upload</span></a>
+      </div>
+    </details>
+    {% endif %}
+    {% if ing %}<a class="btn" href="/batches/{{ b.batch_id }}/fix" data-testid="fix-rows">{{ ui.icon("edit") }}Fix rows</a>{% endif %}
+    {% elif b.status == "failed" and dl %}
+    <a class="btn" href="/api/batches/{{ b.batch_id }}/source-file" download data-testid="source-file">{{ ui.icon("download") }}Original file</a>
+    {% endif %}
+    {% if dl %}
+    {% if b.status in ["completed", "partial"] %}
+    <a class="btn" data-testid="download-report" href="/api/batches/{{ b.batch_id }}/reject-report.csv" download>{{ ui.icon("download") }}Reject report</a>
+    {% else %}
+    <span class="btn" data-testid="download-report" aria-disabled="true" title="{{ 'Available once processing finishes' if live else 'A failed run has no per-row report' }}">{{ ui.icon("download") }}Reject report</span>
+    {% endif %}
+    {% endif %}
+    {% if ing and b.status in ["partial", "failed"] and twin %}
+    <span class="btn primary" data-testid="reprocess-button" aria-disabled="true" title="This file already has a run on v{{ twin.contract_version }}">{{ ui.icon("refresh") }}Reprocess</span>
+    {% elif ing and b.status in ["partial", "failed"] %}
+    <form action="/batches/{{ b.batch_id }}/reprocess" method="post"
+          onsubmit="return confirm('Reprocess this file with the newest {{ b.contract_name }} contract? Its current rejections will be replaced.')">
+      <button type="submit" class="btn primary" data-testid="reprocess-button">{{ ui.icon("refresh") }}Reprocess</button>
     </form>
     {% endif %}
   </div>
+</div>
+
+<div class="detail">
+<div class="detail-main">
+
+{% if fixed_from %}
+<div class="callout info" role="status">{{ ui.icon("edit") }}<div><strong>Created from fixed rows.</strong> These rows were corrected in the app from run <a class="mono" href="/batches/{{ fixed_from }}">{{ fixed_from[:8] }}</a>; that run's rejections are unchanged.</div></div>
+{% endif %}
+
+{% if error %}
+<div class="callout bad" role="alert">{{ ui.icon("alert") }}<div>{{ error }}</div></div>
+{% endif %}
+
+{% if reprocess_result %}
+{% set r = reprocess_result %}
+<div class="callout info" data-testid="reprocess-result" role="status">
+  {{ ui.icon("refresh") }}
+  <div>
+    <strong>Reprocessed.</strong>
+    Accepted {{ r.before_accepted|num }} <span aria-label="to">→</span> <strong>{{ r.after_accepted|num }}</strong>,
+    rejected {{ r.before_rejected|num }} <span aria-label="to">→</span> <strong>{{ r.after_rejected|num }}</strong>.
+  </div>
+</div>
+{% endif %}
+
+{% if b.status == "failed" %}
+<div class="callout bad">
+  {{ ui.icon("alert") }}
+  <div>
+    <strong>The file could not be processed.</strong>
+    <div class="callout-detail">{{ b.failure_reason or "No reason was recorded." }}</div>
+    <div class="callout-hint">No rows were loaded. <a href="/api/batches/{{ b.batch_id }}/source-file" download>Download the original file</a>, fix it and upload it again, or <a href="/contracts/{{ b.contract_name }}/edit">publish a corrected contract version</a> and reprocess.</div>
+  </div>
+</div>
+{% endif %}
+
+{% if twin and b.status in ["partial", "failed"] %}
+<div class="callout info" data-testid="twin-batch">
+  {{ ui.icon("info") }}
+  <div>
+    <strong>This file has already been loaded with {{ twin.contract_name }} v{{ twin.contract_version }}.</strong>
+    Reprocessing would move this run to v{{ twin.contract_version }}, where the file already has a run, so it is turned off.
+    <div class="callout-hint"><a href="/batches/{{ twin.batch_id }}">Open the v{{ twin.contract_version }} run <span class="mono">{{ twin.batch_id[:8] }}</span></a> · {{ twin.accepted_rows|num }} accepted, {{ twin.rejected_rows|num }} rejected · {{ twin.status }}</div>
+  </div>
+</div>
+{% elif latest_version and latest_version > b.contract_version and b.status in ["partial", "failed"] %}
+<div class="callout info">
+  {{ ui.icon("info") }}
+  <div><strong>{{ b.contract_name }} v{{ latest_version }} is available.</strong> This run used v{{ b.contract_version }}; reprocessing applies the newest version. <a href="/contracts/{{ b.contract_name }}?tab=versions">See what changed</a>.</div>
+</div>
+{% endif %}
+
+{% if live %}
+{% set waiting = b.status == "pending" %}
+{{ ui.progress_panel(
+     ("Waiting to start " if waiting else "Processing ") ~ b.file_name,
+     prog,
+     ["File received", "Queued", "Checking and loading rows", "Finishing"],
+     1 if waiting else (3 if prog.expected and prog.done >= prog.expected else 2),
+     [("Accepted so far", b.accepted_rows|num), ("Rejected so far", b.rejected_rows|num), ("Chunks saved", chunks|num)]
+   ) }}
+{% endif %}
+
+<section class="panel summary" aria-label="Row counts">
+  <dl class="stats">
+    <div class="stat"><dt>Total rows</dt><dd data-testid="counter-total">{{ b.total_rows|num }}</dd></div>
+    <div class="stat"><dt><span class="key ok"></span>Accepted</dt><dd class="{{ 'is-ok' if b.accepted_rows else '' }}" data-testid="counter-accepted">{{ b.accepted_rows|num }}</dd></div>
+    <div class="stat"><dt><span class="key bad"></span>Rejected</dt><dd class="{{ 'is-bad' if b.rejected_rows else '' }}" data-testid="counter-rejected">{{ b.rejected_rows|num }}</dd></div>
+    <div class="stat"><dt>Acceptance</dt><dd>{% if settled %}{{ pct(b.accepted_rows, settled) }}%{% else %}—{% endif %}</dd></div>
+  </dl>
+  {% if settled %}{{ ui.outcome_bar(b, "lg") }}{% endif %}
 </section>
 
-<section class="panel">
-  <h2>Reject reason breakdown</h2>
-  <table>
-    <thead><tr><th>reason</th><th>count</th><th>% of rejected rows</th></tr></thead>
-    <tbody>
+<section class="panel" aria-labelledby="lineage-title">
+  <div class="panel-head"><h2 id="lineage-title">Lineage</h2><span class="hint">where this file's rows went</span></div>
+  <div class="lineage">
+    <div class="node">
+      <span class="node-icon">{{ ui.icon("file") }}</span>
+      <span class="node-kind">Source file</span>
+      <span class="node-name" title="{{ b.file_name }}">{{ b.file_name }}</span>
+      <span class="node-meta mono" title="SHA-256 {{ b.file_sha256 }}">sha256 {{ b.file_sha256[:12] }}…</span>
+    </div>
+    <span class="edge" aria-hidden="true">{{ ui.icon("arrow") }}</span>
+    <a class="node" href="/contracts/{{ b.contract_name }}?v={{ b.contract_version }}">
+      <span class="node-icon">{{ ui.icon("contract") }}</span>
+      <span class="node-kind">Contract</span>
+      <span class="node-name">{{ b.contract_name }} v{{ b.contract_version }}</span>
+      <span class="node-meta">{{ contract.columns|length if contract else "?" }} columns · {{ contract.rules|length if contract else "?" }} rules</span>
+    </a>
+    <span class="edge" aria-hidden="true">{{ ui.icon("arrow") }}</span>
+    <div class="node-pair">
+      <div class="node ok">
+        <span class="node-icon">{{ ui.icon("table") }}</span>
+        <span class="node-kind">Target table</span>
+        <span class="node-name mono">{{ contract.target_table if contract else "—" }}</span>
+        <span class="node-meta">{{ b.accepted_rows|num }} rows accepted</span>
+      </div>
+      <a class="node bad" href="#records">
+        <span class="node-icon">{{ ui.icon("shield") }}</span>
+        <span class="node-kind">Rejected records</span>
+        <span class="node-name mono">rejected_records</span>
+        <span class="node-meta">{{ b.rejected_rows|num }} rows kept with reasons</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+{% if not live and b.status != "failed" %}
+
+{% if reasons %}
+<section class="panel" aria-labelledby="why-title">
+  <div class="panel-head">
+    <h2 id="why-title">Why rows were rejected</h2>
+    <span class="hint">{{ rejected_row_count|num }} rejected {{ "row" if rejected_row_count == 1 else "rows" }} · a row can fail several checks</span>
+  </div>
+  <div class="bars">
     {% for r in reasons %}
-      <tr data-testid="reason-row" data-reason-code="{{ r.reason_code }}"><td><a href="/batches/{{ b.batch_id }}?reason_code={{ r.reason_code }}">{{ r.reason_code }}</a></td>
-          <td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
-    {% else %}
-      <tr><td colspan="3" class="empty" data-testid="empty-state">No rejections — every row landed.</td></tr>
+    <a class="bar-row{% if reason_code == r.reason_code %} is-active{% endif %}" data-testid="reason-row" data-reason-code="{{ r.reason_code }}"
+       href="/batches/{{ b.batch_id }}?{{ qs(reason_code=r.reason_code) }}#records"
+       {% if reason_code == r.reason_code %}aria-current="true"{% endif %}>
+      <span class="bar-label">
+        <span class="chip">{{ r.reason_code }}</span>
+        <span class="bar-desc">{{ reason_label(r.reason_code, r.sample_message) }}</span>
+      </span>
+      <span class="bar-track"><span class="bar-fill" style="--w: {{ [r.pct, 100]|min }}%"></span></span>
+      <span class="bar-count">{{ r.count|num }}</span>
+      <span class="bar-pct">{{ r.pct }}%</span>
+    </a>
     {% endfor %}
-    </tbody>
-  </table>
+  </div>
 </section>
+{% endif %}
 
-<section class="panel">
-  <h2>Rejected records {% if reason_code %}(filtered: {{ reason_code }} <a href="/batches/{{ b.batch_id }}">clear</a>){% endif %}</h2>
-  <table>
-    <thead><tr><th>row</th><th>reason</th><th>message</th><th>column</th><th>value</th><th>original</th></tr></thead>
+<section class="panel" id="records" aria-labelledby="records-title">
+  <div class="panel-head">
+    <h2 id="records-title">Rejected records</h2>
+    {% if reason_code %}
+      <a class="filter-pill" href="/batches/{{ b.batch_id }}#records" title="Clear filter"><span class="mono">{{ reason_code }}</span>{{ ui.icon("x") }}</a>
+    {% endif %}
+    {% if n_records %}
+    <span class="hint push">{{ ((page - 1) * per_page + 1)|num }}–{{ [page * per_page, n_records]|min|num }} of {{ n_records|num }}</span>
+    {% if can(request, "ingest") %}<a class="btn sm" href="/batches/{{ b.batch_id }}/fix">{{ ui.icon("edit") }}Fix these rows</a>{% endif %}
+    {% endif %}
+  </div>
+  <div class="table-wrap records-wrap">
+  <table class="data records">
+    <thead><tr><th class="num">Row</th><th>Reason</th><th>Column</th><th>Value</th><th class="col-msg">Message</th><th><span class="sr-only">Original row</span></th></tr></thead>
     <tbody>
     {% for r in rows %}
-      <tr data-testid="rejection-row" data-row-number="{{ r.row_number }}"><td>{{ r.row_number }}</td><td>{{ r.reason_code }}</td><td>{{ r.reason_message }}</td>
-          <td>{{ r.column_name or "—" }}</td><td>{{ r.offending_value or "—" }}</td>
-          <td><details><summary data-testid="original-row-toggle">show</summary><code>{{ r.original_row }}</code></details></td></tr>
+      {% set first = loop.first or loop.previtem.row_number != r.row_number %}
+      <tr data-testid="rejection-row" data-row-number="{{ r.row_number }}" class="{{ 'group-start' if first else 'group-cont' }}">
+        <td class="num mono row-no">{{ r.row_number|num }}</td>
+        <td><span class="chip">{{ r.reason_code }}</span></td>
+        <td class="mono cell-muted">{{ source_of.get(r.column_name, r.column_name) or "—" }}</td>
+        <td>{% if r.offending_value is none %}<span class="cell-muted">—</span>{% elif r.offending_value == "" %}<span class="val is-empty">empty</span>{% else %}<code class="val">{{ r.offending_value }}</code>{% endif %}</td>
+        <td class="col-msg">{{ r.reason_message }}</td>
+        <td class="col-orig">
+          <details class="orig">
+            <summary data-testid="original-row-toggle">Row {{ r.row_number }}</summary>
+            <div class="orig-pop">
+              <table class="kvt">
+                {% for k, v in (r.original_row or {}).items() %}
+                <tr{% if k == source_of.get(r.column_name, r.column_name) %} class="is-hit"{% endif %}><th>{{ k }}</th><td>{% if v is none %}<span class="cell-muted">empty</span>{% else %}{{ v }}{% endif %}</td></tr>
+                {% endfor %}
+              </table>
+            </div>
+          </details>
+        </td>
+      </tr>
     {% else %}
-      <tr><td colspan="6" class="empty" data-testid="empty-state">No rejected records to show.</td></tr>
+      <tr><td colspan="6" data-testid="empty-state">
+        {% if reason_code %}
+          {{ ui.empty("search", "No records with " ~ reason_code) }}
+        {% else %}
+          {{ ui.empty("check", "Every row was accepted", "Nothing was rejected in this run.") }}
+        {% endif %}
+      </td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
+  {% if n_records > per_page %}
+  {% set last = ((n_records + per_page - 1) // per_page) %}
+  <nav class="pager" aria-label="Rejected records pages">
+    {% if page > 1 %}<a class="btn" href="/batches/{{ b.batch_id }}?{{ qs(reason_code=reason_code, page=page - 1) }}#records">Previous</a>{% else %}<span class="btn" aria-disabled="true">Previous</span>{% endif %}
+    <span class="hint">Page {{ page }} of {{ last }}</span>
+    {% if page < last %}<a class="btn" href="/batches/{{ b.batch_id }}?{{ qs(reason_code=reason_code, page=page + 1) }}#records">Next</a>{% else %}<span class="btn" aria-disabled="true">Next</span>{% endif %}
+  </nav>
+  {% endif %}
 </section>
+{% endif %}
+
+</div>
+
+<aside class="detail-side" aria-label="Run details">
+  <section class="panel props">
+    <h2 class="props-title">Run details</h2>
+    <dl class="kv">
+      <dt>Batch id</dt>
+      <dd class="kv-copy"><span class="mono" title="{{ b.batch_id }}">{{ b.batch_id[:13] }}…</span><button type="button" class="icon-btn sm" data-copy="{{ b.batch_id }}" aria-label="Copy batch id" title="Copy batch id">{{ ui.icon("copy") }}{{ ui.icon("check", "when-copied") }}</button></dd>
+      <dt>Contract</dt><dd><span data-testid="contract-version" class="mono">{{ b.contract_name }}@v{{ b.contract_version }}</span></dd>
+      <dt>Contract hash</dt><dd class="mono cell-muted" title="{{ b.contract_hash }}">{{ b.contract_hash[:12] }}…</dd>
+      <dt>File SHA-256</dt><dd class="kv-copy"><span class="mono cell-muted" title="{{ b.file_sha256 }}">{{ b.file_sha256[:12] }}…</span><button type="button" class="icon-btn sm" data-copy="{{ b.file_sha256 }}" aria-label="Copy file hash" title="Copy file hash">{{ ui.icon("copy") }}{{ ui.icon("check", "when-copied") }}</button></dd>
+      <dt>Created</dt><dd title="{{ b.created_at|utc }}">{{ b.created_at|ago }}</dd>
+      <dt>Started</dt><dd title="{{ b.started_at|utc }}">{{ b.started_at|ago }}</dd>
+      <dt>Finished</dt><dd title="{{ b.finished_at|utc }}">{{ b.finished_at|ago }}</dd>
+      <dt>Duration</dt><dd>{{ b|duration }}</dd>
+      <dt>Retries</dt><dd data-testid="retry-attempts">{{ b.retry_attempts }}</dd>
+    </dl>
+  </section>
+</aside>
+</div>
+
+</div>
 {% endblock %}

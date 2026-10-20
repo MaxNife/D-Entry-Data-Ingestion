@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}Fix rows · {{ b.file_name }}{% endblock %}
+{% block content %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/">Runs</a>{{ ui.icon("chevron") }}<a href="/batches/{{ b.batch_id }}">{{ b.file_name }}</a>{{ ui.icon("chevron") }}<span>Fix rows</span>
+</nav>
+<div class="page-head">
+  <div>
+    <h1>Fix rejected rows</h1>
+    <p class="lede">Edit the cells marked in red, then re-validate. Resubmitting sends the selected rows as a <strong>new run</strong> into <span class="mono">{{ b.contract_name }}</span>'s table. Run <span class="mono">{{ b.batch_id[:8] }}</span> and its rejections stay as they are.</p>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/api/batches/{{ b.batch_id }}/rejected-rows?format=xlsx" download>{{ ui.icon("download") }}Download to fix in Excel</a>
+  </div>
+</div>
+{% set err = request.query_params.get("error") %}
+{% if err %}<div class="flash error" role="alert">{{ ui.icon("alert") }}<span>{{ err }}</span></div>{% endif %}
+
+{% if not grid.rows %}
+<section class="panel">{{ ui.empty("check", "Nothing to fix", "This run has no rejected rows.") }}</section>
+{% else %}
+<form method="post" action="/batches/{{ b.batch_id }}/fix/submit" id="fix-form" data-fix-form
+      onsubmit="return confirm('Submit the selected rows as a new run?')">
+  <input type="hidden" name="rows_json" data-rows-json>
+  <section class="panel">
+    <div class="filterbar">
+      <label class="field-inline">Validate against
+        <select name="contract" data-testid="fix-contract">{% for r in refs %}<option {% if r == contract_ref %}selected{% endif %}>{{ r }}</option>{% endfor %}</select>
+      </label>
+      <label class="check"><input type="checkbox" data-only-issues> Only rows with issues</label>
+      <span class="push"></span>
+      <button type="button" class="btn" data-testid="fix-validate"
+              hx-post="/batches/{{ b.batch_id }}/fix/validate" hx-target="#fix-grid" hx-swap="outerHTML" hx-include="[name=contract]">{{ ui.icon("shield") }}Re-validate</button>
+      <button type="submit" class="btn primary" data-testid="fix-submit">{{ ui.icon("upload") }}Resubmit selected rows</button>
+    </div>
+    {% include "_fix_grid.html" %}
+  </section>
+</form>
+{% endif %}
+<script>
+(function () {
+  var form = document.querySelector("[data-fix-form]");
+  if (!form) return;
+  function serialise() {
+    var grid = document.getElementById("fix-grid");
+    var headers = Array.prototype.map.call(grid.querySelectorAll("thead [data-h]"), function (th) { return th.getAttribute("data-h"); });
+    var rows = Array.prototype.map.call(grid.querySelectorAll("tbody tr[data-row]"), function (tr) {
+      return {
+        row_number: Number(tr.getAttribute("data-row")),
+        include: tr.querySelector("[data-include]").checked,
+        values: Array.prototype.map.call(tr.querySelectorAll("[data-cell]"), function (i) { return i.value; }),
+      };
+    });
+    return JSON.stringify({ headers: headers, rows: rows });
+  }
+  form.addEventListener("submit", function () { form.querySelector("[data-rows-json]").value = serialise(); });
+  document.addEventListener("htmx:configRequest", function (e) {
+    if (e.detail.elt.closest("[data-fix-form]")) e.detail.parameters["rows_json"] = serialise();
+  });
+  form.addEventListener("input", function (e) {
+    if (e.target.matches("[data-cell]")) e.target.classList.toggle("is-edited", e.target.value !== e.target.defaultValue);
+  });
+  function applyFilter() {
+    var only = form.querySelector("[data-only-issues]").checked;
+    document.querySelectorAll("#fix-grid tbody tr[data-row]").forEach(function (tr) { tr.hidden = only && !tr.classList.contains("has-issues"); });
+  }
+  form.querySelector("[data-only-issues]").addEventListener("change", applyFilter);
+  document.addEventListener("htmx:afterSwap", applyFilter);
+})();
+</script>
+{% endblock %}

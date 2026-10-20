@@ -1,0 +1,34 @@
+contract: score_test
+version: 1
+description: Test scores feed for the automated suite (small hand-made fixture, not real data)
+source:
+  formats: [csv, xlsx]
+  encoding: utf-8
+  delimiter: ","
+target:
+  table: test_scores
+  key: row_hash
+  on_conflict: update
+columns:
+  - name: name
+    source_name: Name
+    type: str
+    required: true
+    max_length: 50
+  - name: score
+    source_name: Score
+    type: int
+    required: true
+    min: 0
+    max: 100
+  - name: grade
+    source_name: Grade
+    type: str
+    required: false
+    in_set: [A, B, C, D, F]
+rules:
+  - code: GRADE_SCORE_MISMATCH
+    column: grade
+    check: custom
+    function: ingest.rules.score:grade_score_matches
+    message: grade A requires score >= 90

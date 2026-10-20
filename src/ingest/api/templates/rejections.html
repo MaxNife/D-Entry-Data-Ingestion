@@ -1,31 +1,87 @@
 {% extends "base.html" %}
-{% block title %}Audit · Ingest Platform{% endblock %}
+{% import "_macros.html" as ui %}
+{% block title %}Audit{% endblock %}
 {% block content %}
+<div class="page-head">
+  <div>
+    <h1>Rejection audit</h1>
+    <p class="lede">Every rejected row is kept with its reason. Search every run by reason, contract or date.</p>
+  </div>
+</div>
+
 <section class="panel">
-  <h2>Rejection audit</h2>
-  <form method="get" class="inline">
-    <select name="reason_code" data-testid="audit-reason-code">
-      <option value="">all reasons</option>
-      {% for c in codes %}<option {% if reason_code==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
-    </select>
-    <select name="contract">
-      <option value="">all contracts</option>
-      {% for c in contracts %}<option {% if contract==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
-    </select>
-    <input type="date" name="from" value="{{ date_from }}" aria-label="from" data-testid="audit-from">
-    <input type="date" name="to" value="{{ date_to }}" aria-label="to" data-testid="audit-to">
-    <button type="submit" data-testid="audit-submit">Search</button>
+  <form method="get" class="filterbar fields" role="search">
+    <div class="field">
+      <label for="audit-reason">Reason</label>
+      <select id="audit-reason" name="reason_code" data-testid="audit-reason-code" class="{{ 'is-set' if reason_code }}">
+        <option value="">All reasons</option>
+        {% for c in codes %}<option value="{{ c }}" {% if reason_code == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="audit-contract">Contract</label>
+      <select id="audit-contract" name="contract" class="{{ 'is-set' if contract }}">
+        <option value="">All contracts</option>
+        {% for c in contracts %}<option value="{{ c.name }}" {% if contract == c.name %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="audit-from">From</label>
+      <input id="audit-from" type="date" name="date_from" value="{{ date_from }}" data-testid="audit-from">
+    </div>
+    <div class="field">
+      <label for="audit-to">To</label>
+      <input id="audit-to" type="date" name="date_to" value="{{ date_to }}" data-testid="audit-to">
+    </div>
+    <div class="toolbar-actions">
+      <button type="submit" class="btn primary" data-testid="audit-submit">{{ ui.icon("search") }}Search</button>
+      {% if filtered %}<a class="btn subtle" href="/rejections">{{ ui.icon("x") }}Clear</a>{% endif %}
+    </div>
   </form>
-  <table>
-    <thead><tr><th>batch</th><th>file</th><th>contract</th><th>matching rejections</th></tr></thead>
+  {% if error %}<div class="panel-body"><div class="callout bad" role="alert">{{ ui.icon("alert") }}<div>{{ error }}</div></div></div>{% endif %}
+
+  {% if totals %}
+  <div class="audit-reasons">
+    <div class="section-label">Rejections by reason <span class="hint">{{ total_rejections|num }} total · select one to filter</span></div>
+    <div class="reason-chips">
+      {% for code, n in totals %}
+      <a class="reason-chip{% if reason_code == code %} is-active{% endif %}"
+         href="/rejections?{{ qs(reason_code='' if reason_code == code else code, contract=contract, date_from=date_from, date_to=date_to) }}"
+         title="{{ reason_label(code) }}">
+        <span class="mono">{{ code }}</span><span class="reason-chip-n">{{ n|num }}</span>
+        <span class="reason-chip-bar" style="--w: {{ pct(n, totals[0][1]) }}%"></span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr><th class="col-opt">Start time</th><th>File</th><th class="col-opt">Contract</th><th>Status</th><th class="num">{% if reason_code %}<span class="mono">{{ reason_code }}</span>{% else %}Rejections{% endif %}</th></tr></thead>
     <tbody>
     {% for r in rows %}
-      <tr data-testid="audit-row" data-batch-id="{{ r[0] }}"><td><a href="/batches/{{ r[0] }}">{{ r[0][:8] }}</a></td><td>{{ r[1] }}</td>
-          <td>{{ r[2] }}@{{ r[3] }}</td><td>{{ r[4] }}</td></tr>
+      <tr data-testid="audit-row" data-batch-id="{{ r.batch_id }}" class="row-link">
+        <td class="nowrap cell-muted col-opt" title="{{ r.created_at|utc }}">{{ r.created_at|ago }}</td>
+        <td class="cell-file">
+          <a class="stretch" href="/batches/{{ r.batch_id }}{% if reason_code %}?{{ qs(reason_code=reason_code) }}#records{% endif %}"><span class="file-name" title="{{ r.file_name }}">{{ r.file_name }}</span></a>
+          <span class="file-id mono">{{ r.batch_id[:8] }}</span>
+        </td>
+        <td class="col-opt nowrap lift">{{ ui.contract_ref(r.contract_name, r.contract_version) }}</td>
+        <td>{{ ui.status_badge({"status": r.status, "batch_id": r.batch_id}) }}</td>
+        <td class="num is-bad">{{ r.count|num }}</td>
+      </tr>
     {% else %}
-      <tr><td colspan="4" class="empty" data-testid="empty-state">No batches match — adjust the filters.</td></tr>
+      <tr><td colspan="5" data-testid="empty-state">
+        {% if filtered %}
+          {{ ui.empty("search", "No rejections match", "Adjust the reason, contract or date filters.") }}
+        {% else %}
+          {{ ui.empty("check", "No rejected rows yet", "Rejected rows from every run will be searchable here.") }}
+        {% endif %}
+      </td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {% endblock %}

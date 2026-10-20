@@ -1,0 +1,14 @@
+{% extends "auth_base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<h1>Sign in</h1>
+<p class="lede">Use the email and password your workspace admin gave you.</p>
+{% if error %}<div class="flash error" role="alert" data-testid="login-error">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+<form method="post" action="/login" class="auth-form">
+  <input type="hidden" name="next" value="{{ next }}">
+  <div class="field"><label for="l-email">Email</label><input id="l-email" class="input" type="email" name="email" value="{{ email }}" autocomplete="username" required autofocus data-testid="login-email"></div>
+  <div class="field"><label for="l-pass">Password</label><input id="l-pass" class="input" type="password" name="password" autocomplete="current-password" required data-testid="login-password"></div>
+  <button type="submit" class="btn primary block" data-testid="login-submit">Sign in</button>
+</form>
+<p class="hint">Forgot your password? Ask a workspace admin to reset it.</p>
+{% endblock %}

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}{{ c.name }}{% endblock %}
+{% block content %}
+<div class="explorer">
+  <nav class="tree" aria-label="Tables in {{ c.name }}">
+    <div class="tree-head"><span class="tree-title">{{ c.name }}</span><span class="hint">{{ tables|length }} tables</span></div>
+    <label class="search sm">{{ ui.icon("search") }}<input type="search" placeholder="Filter tables" aria-label="Filter tables" data-filter-tree></label>
+    <ul class="tree-list" role="tree">
+      {% for t in tables %}
+      <li role="treeitem" data-tree-name="{{ t.name }}"><a class="tree-node{% if table == t.name %} is-selected{% endif %}" href="/connections/{{ c.name }}?table={{ t.name }}">{{ ui.icon("table") }}<span>{{ t.name }}</span><span class="tag">{{ t.columns|length }}</span></a></li>
+      {% else %}
+      <li class="hint tree-empty">No tables found.</li>
+      {% endfor %}
+    </ul>
+  </nav>
+
+  <div class="explorer-main">
+    <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/connections">Connections</a>{{ ui.icon("chevron") }}<span>{{ c.name }}</span>{% if table %}{{ ui.icon("chevron") }}<span class="mono">{{ table }}</span>{% endif %}</nav>
+    <div class="page-head">
+      <div class="head-main">
+        <div class="title-row">
+          <span class="title-icon">{{ ui.icon("server") }}</span><h1>{{ c.name }}</h1>
+          {% if c.last_test_ok %}<span class="badge ok">{{ ui.icon("check-circle", "badge-icon") }}<span>Connected</span></span>{% elif c.last_test_ok is false %}<span class="badge bad">{{ ui.icon("x-circle", "badge-icon") }}<span>Failing</span></span>{% endif %}
+        </div>
+        <p class="lede">{{ kinds[c.kind].label }} · <span class="mono">{% if c.kind == "sqlite" %}{{ c.database }}{% else %}{{ c.username ~ "@" if c.username }}{{ c.host }}{{ ":" ~ c.port if c.port }}/{{ c.database }}{% endif %}</span>{% if used_by %} · destination of {% for n in used_by %}<a href="/contracts/{{ n }}">{{ n }}</a>{{ ", " if not loop.last }}{% endfor %}{% endif %}</p>
+      </div>
+      <div class="actions">
+        {% if can(request, "connections") %}<form method="post" action="/connections/{{ c.name }}/retest"><button class="btn" type="submit">{{ ui.icon("refresh") }}Test again</button></form>{% endif %}
+        {% if can(request, "sql") %}<a class="btn" href="/query?db={{ c.name }}">{{ ui.icon("terminal") }}SQL editor</a>{% endif %}
+        {% if can(request, "connections") %}<a class="btn" href="/connections/{{ c.name }}/edit">{{ ui.icon("edit") }}Edit</a>{% endif %}
+      </div>
+    </div>
+    {{ ui.flash(flash) if flash }}
+
+    {% if can(request, "use_connections") %}
+    <section class="panel" aria-labelledby="use-title">
+      <div class="panel-head"><h2 id="use-title">Use this data</h2><span class="hint">reads a snapshot; the source is never changed</span></div>
+      <form method="post" action="/connections/{{ c.name }}/use" class="panel-body use-form" data-use-form>
+        <div class="field">
+          <label for="u-table">Table</label>
+          <select id="u-table" name="table" data-testid="use-table">
+            <option value="">— write a query instead —</option>
+            {% for t in tables %}<option {% if table == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field span-2" data-query hidden>
+          <label for="u-sql">Query</label>
+          <textarea id="u-sql" name="sql" class="code sql-mini" rows="3" spellcheck="false" placeholder="SELECT * FROM orders WHERE created_at >= '2026-01-01'"></textarea>
+        </div>
+        <div class="field">
+          <label for="u-contract">Contract</label>
+          <select id="u-contract" name="contract" data-testid="use-contract">
+            <option value="">Choose a contract…</option>
+            {{ ui.contract_options(contracts) }}
+          </select>
+        </div>
+        <div class="use-actions">
+          <button type="submit" name="action" value="validate" class="btn" data-testid="use-validate">{{ ui.icon("shield") }}Validate</button>
+          <button type="submit" name="action" value="import" class="btn primary" data-testid="use-import">{{ ui.icon("download") }}Import</button>
+          {% if can(request, "contracts") %}<button type="submit" name="action" value="draft" class="btn subtle" data-testid="use-draft" title="Draft a new contract whose columns match this table">{{ ui.icon("wand") }}Draft a contract from it</button>{% endif %}
+        </div>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if preview %}
+    <section class="panel" aria-label="Preview of {{ table }}">
+      <div class="panel-head"><h2 class="mono">{{ table }}</h2><span class="hint">{{ preview.count|num }} rows · first {{ preview.rows|length }} shown</span></div>
+      <div class="table-wrap results-wrap">
+        <table class="data rows-table">
+          <thead><tr>{% for col in preview.columns %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+          <tbody>{% for r in preview.rows %}<tr>{% for v in r %}<td>{% if v is none %}<span class="null">null</span>{% else %}{{ v|cell }}{% endif %}</td>{% endfor %}</tr>{% else %}<tr><td colspan="{{ preview.columns|length }}">{{ ui.empty("table", "This table is empty") }}</td></tr>{% endfor %}</tbody>
+        </table>
+      </div>
+    </section>
+    {% elif tables %}
+    <section class="panel">{{ ui.empty("table", "Pick a table", "Its first rows show here. Validate or import it with a contract above.") }}</section>
+    {% endif %}
+  </div>
+</div>
+<script>
+(function () {
+  var f = document.querySelector("[data-use-form]"); if (!f) return;
+  var table = f.querySelector("[name=table]"), q = f.querySelector("[data-query]");
+  function sync() { q.hidden = !!table.value; }
+  table.addEventListener("change", sync); sync();
+  var tf = document.querySelector("[data-filter-tree]");
+  if (tf) tf.addEventListener("input", function () {
+    var v = tf.value.toLowerCase();
+    document.querySelectorAll("[data-tree-name]").forEach(function (li) { li.hidden = v && li.getAttribute("data-tree-name").toLowerCase().indexOf(v) < 0; });
+  });
+})();
+</script>
+{% endblock %}

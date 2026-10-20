@@ -1,0 +1,6 @@
+{% import "_macros.html" as ui %}
+{% if ok %}
+<span class="badge ok" data-testid="conn-test-result" data-ok="1">{{ ui.icon("check-circle", "badge-icon") }}<span>Connected</span></span> <span class="hint">{{ message }}</span>
+{% else %}
+<span class="badge bad" data-testid="conn-test-result" data-ok="0">{{ ui.icon("x-circle", "badge-icon") }}<span>Could not connect</span></span> <span class="conn-err">{{ message }}</span>
+{% endif %}

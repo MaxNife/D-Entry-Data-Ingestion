@@ -1,55 +1,95 @@
 {% extends "base.html" %}
-{% block title %}Batches · Ingest Platform{% endblock %}
+{% import "_macros.html" as ui %}
+{% block title %}Runs{% endblock %}
 {% block content %}
-<section class="cards">
-  <div class="card" data-testid="metric-batches-today"><div class="num">{{ metrics.batches_today }}</div><div class="lbl">batches today</div></div>
-  <div class="card" data-testid="metric-rows-accepted-today"><div class="num">{{ metrics.rows_accepted_today }}</div><div class="lbl">rows accepted today</div></div>
-  <div class="card" data-testid="metric-rows-rejected-today"><div class="num">{{ metrics.rows_rejected_today }}</div><div class="lbl">rows rejected today</div></div>
-  <div class="card" data-testid="metric-failed-batches-today"><div class="num">{{ metrics.failed_batches_today }}</div><div class="lbl">failed batches today</div></div>
+<div class="page-head">
+  <div>
+    <h1>Runs</h1>
+    <p class="lede">Every file ingested: how many rows loaded, how many were rejected, and why.</p>
+  </div>
+  <div class="actions">
+    <span class="hint" title="Times are UTC">As of {{ now_utc() }}</span>
+    <a class="btn" href="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">{{ ui.icon("refresh") }}Refresh</a>
+    {% if can(request, "ingest") %}<button type="button" class="btn primary" data-open="new-ingestion">{{ ui.icon("plus") }}New ingestion</button>{% endif %}
+  </div>
+</div>
+
+{{ ui.flash(message) }}
+
+{% set m = metrics %}
+{% set rows_today = m.rows_accepted_today + m.rows_rejected_today %}
+<section class="kpis" aria-label="Today (UTC)">
+  <div class="kpi">
+    <div class="kpi-label">Runs today</div>
+    <div class="kpi-value" data-testid="metric-batches-today">{{ m.batches_today|num }}</div>
+    <div class="kpi-sub">{{ rows_today|num }} rows read</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label"><span class="key ok"></span>Rows accepted today</div>
+    <div class="kpi-value" data-testid="metric-rows-accepted-today">{{ m.rows_accepted_today|num }}</div>
+    <div class="kpi-sub">{% if rows_today %}{{ pct(m.rows_accepted_today, rows_today) }}% of rows read{% else %}No rows yet{% endif %}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label"><span class="key bad"></span>Rows rejected today</div>
+    <div class="kpi-value{% if not m.rows_rejected_today %} is-zero{% endif %}" data-testid="metric-rows-rejected-today">{{ m.rows_rejected_today|num }}</div>
+    <div class="kpi-sub">{% if m.rows_rejected_today %}<a href="/rejections">Review in audit</a>{% else %}Nothing to review{% endif %}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label"><span class="key {% if m.failed_batches_today %}bad{% else %}idle{% endif %}"></span>Failed runs today</div>
+    <div class="kpi-value{% if not m.failed_batches_today %} is-zero{% endif %}" data-testid="metric-failed-batches-today">{{ m.failed_batches_today|num }}</div>
+    <div class="kpi-sub">{% if m.failed_batches_today %}<a href="/?status=failed">Show failed</a>{% else %}No file failed to open{% endif %}</div>
+  </div>
 </section>
 
 <section class="panel">
-  <h2>Upload</h2>
-  <form action="/upload" method="post" enctype="multipart/form-data" class="inline">
-    <input type="file" name="file" required data-testid="upload-file">
-    <select name="contract" data-testid="upload-contract">{% for c in contracts %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
-    <button type="submit" data-testid="upload-submit">Ingest</button>
-  </form>
-  {% if upload_message %}<p data-testid="upload-message">{{ upload_message }}</p>{% endif %}
+  {{ ui.runs_chart(days, day_max) }}
 </section>
 
-<section class="panel">
-  <h2>Batch history</h2>
-  <form method="get" class="inline">
-    <input type="search" name="q" placeholder="file name or batch id" value="{{ q }}" data-testid="batch-search">
-    <select name="status" data-testid="status-filter">
-      <option value="">all statuses</option>
-      {% for s in ["pending","processing","completed","partial","failed"] %}
-      <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ s }}</option>
-      {% endfor %}
+<section class="panel" aria-labelledby="history-title">
+  <form method="get" class="filterbar" role="search">
+    <label class="search">
+      {{ ui.icon("search") }}
+      <input type="search" name="q" placeholder="Filter by file name or batch id" value="{{ q }}" data-testid="batch-search" aria-label="Search batches">
+    </label>
+    <select name="status" data-testid="status-filter" aria-label="Filter by status" onchange="this.form.requestSubmit()" class="{{ 'is-set' if status }}">
+      <option value="">Status: all</option>
+      {% for s in statuses %}<option value="{{ s }}" {% if status == s %}selected{% endif %}>Status: {{ s }}</option>{% endfor %}
     </select>
-    <select name="contract" data-testid="contract-filter">
-      <option value="">all contracts</option>
-      {% for c in contracts %}<option {% if contract==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    <select name="contract" data-testid="contract-filter" aria-label="Filter by contract" onchange="this.form.requestSubmit()" class="{{ 'is-set' if contract }}">
+      <option value="">Contract: all</option>
+      {% for c in contracts %}<option value="{{ c.name }}" {% if contract == c.name %}selected{% endif %}>Contract: {{ c.name }}</option>{% endfor %}
     </select>
-    <button type="submit" data-testid="filter-submit">Filter</button>
+    <select name="since" aria-label="Time range" onchange="this.form.requestSubmit()" class="{{ 'is-set' if since }}">
+      <option value="">Time: any</option>
+      {% for value, label, _ in since_options %}<option value="{{ value }}" {% if since == value %}selected{% endif %}>Time: {{ label|lower }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="btn" data-testid="filter-submit">Apply</button>
+    {% if filtered %}<a class="btn subtle" href="/">{{ ui.icon("x") }}Clear</a>{% endif %}
+    <span id="history-title" class="hint push">{{ batches|length }}{% if batches|length == 100 %}+{% endif %} {{ "run" if batches|length == 1 else "runs" }}{% if filtered %} match{% endif %}</span>
   </form>
-  <table>
-    <thead><tr><th>batch</th><th>file</th><th>contract</th><th>status</th><th>total</th><th>accepted</th><th>rejected</th><th>started</th></tr></thead>
+  <div class="table-wrap">
+  <table class="data batches">
+    <thead>
+      <tr>
+        <th class="col-opt">Start time</th><th>File</th><th class="col-opt">Contract</th><th>Status</th>
+        <th class="num col-opt">Rows</th><th class="num">Accepted</th><th class="num">Rejected</th>
+        <th class="col-opt col-bar"><span class="sr-only">Outcome</span></th><th class="num col-opt">Duration</th>
+      </tr>
+    </thead>
     <tbody>
     {% for b in batches %}
-      <tr data-testid="batch-row" data-batch-id="{{ b.batch_id }}">
-        <td><a href="/batches/{{ b.batch_id }}">{{ b.batch_id[:8] }}</a></td>
-        <td>{{ b.file_name }}</td>
-        <td>{{ b.contract_name }}@{{ b.contract_version }}</td>
-        <td>{% if b.status in ["pending","processing"] %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}" hx-get="/partials/batch-status/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML">{{ b.status }}</span>{% else %}<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class[b.status] }}"{% if b.failure_reason %} title="{{ b.failure_reason }}"{% endif %}>{{ b.status }}</span>{% endif %}</td>
-        <td>{{ b.total_rows }}</td><td>{{ b.accepted_rows }}</td><td>{{ b.rejected_rows }}</td>
-        <td>{{ b.started_at or "—" }}</td>
-      </tr>
+      {{ ui.batch_row(b) }}
     {% else %}
-      <tr><td colspan="8" class="empty" data-testid="empty-state">No batches yet — upload a file above.</td></tr>
+      <tr><td colspan="9" data-testid="empty-state">
+        {% if filtered %}
+          {{ ui.empty("search", "No runs match these filters", "Try a different search, or clear the filters.") }}
+        {% else %}
+          {{ ui.empty("inbox", "No runs yet", "Choose New ingestion to upload your first file.") }}
+        {% endif %}
+      </td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {% endblock %}

@@ -1,0 +1,46 @@
+{% extends "settings_base.html" %}
+{% block title %}Workspace settings{% endblock %}
+{% block settings %}
+<nav class="breadcrumb" aria-label="Breadcrumb"><span>Workspace admin</span>{{ ui.icon("chevron") }}<span>Workspace settings</span></nav>
+<div class="settings-head"><h1>Workspace settings</h1><p class="lede">Apply to everyone in {{ s.workspace_name }}. Changes take effect straight away and are recorded in the audit log.</p></div>
+{% if saved %}<div class="flash info" role="status" data-testid="workspace-saved">{{ ui.icon("check") }}<span>Workspace settings saved</span></div>{% endif %}
+{% if error %}<div class="flash error" role="alert">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+<form method="post" action="/admin/workspace">
+  <section class="set-section" aria-labelledby="w-gen">
+    <h2 id="w-gen">General</h2>
+    <div class="set-row">
+      <div class="set-label"><label for="w-name"><strong>Workspace name</strong></label><span class="hint">Shown in the top bar and on the sign-in page.</span></div>
+      <div class="set-control"><input id="w-name" class="input" name="workspace_name" value="{{ s.workspace_name }}" maxlength="60" required data-testid="ws-name"></div>
+    </div>
+  </section>
+
+  <section class="set-section" aria-labelledby="w-sec">
+    <h2 id="w-sec">Sign-in and security</h2>
+    <div class="set-row">
+      <div class="set-label"><label for="w-hours"><strong>Session length</strong></label><span class="hint">How long someone stays signed in, in hours. Applies to new sign-ins.</span></div>
+      <div class="set-control"><input id="w-hours" class="input num" type="number" name="session_hours" min="1" max="720" value="{{ s.session_hours }}" required></div>
+    </div>
+    <div class="set-row">
+      <div class="set-label"><label for="w-pw"><strong>Minimum password length</strong></label><span class="hint">Applies when a password is next set or changed.</span></div>
+      <div class="set-control"><input id="w-pw" class="input num" type="number" name="password_min_length" min="8" max="64" value="{{ s.password_min_length }}" required></div>
+    </div>
+  </section>
+
+  <section class="set-section" aria-labelledby="w-data">
+    <h2 id="w-data">Data access</h2>
+    <div class="set-row">
+      <div class="set-label"><strong>Viewers can use the SQL editor</strong><span class="hint">Queries are always read-only. Turn this off to limit viewers to the pages and reports.</span></div>
+      <div class="set-control"><label class="switch"><input type="checkbox" name="viewers_can_query" {% if s.viewers_can_query %}checked{% endif %} data-testid="ws-viewers-sql"><span class="switch-ui" aria-hidden="true"></span><span class="sr-only">Viewers can use the SQL editor</span></label></div>
+    </div>
+    <div class="set-row">
+      <div class="set-label"><label for="w-dl"><strong>Who can download data</strong></label><span class="hint">Table and query exports, reject reports, rejected rows and original files.</span></div>
+      <div class="set-control">
+        <select id="w-dl" name="downloads" data-testid="ws-downloads">
+          {% for key, label in [("everyone", "Everyone"), ("editors", "Editors and admins"), ("admins", "Admins only")] %}<option value="{{ key }}" {% if s.downloads == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+  </section>
+  <div class="savebar inset-plain"><button type="submit" class="btn primary" data-testid="ws-save">{{ ui.icon("check") }}Save changes</button></div>
+</form>
+{% endblock %}

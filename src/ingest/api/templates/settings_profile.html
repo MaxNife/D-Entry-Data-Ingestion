@@ -1,0 +1,50 @@
+{% extends "settings_base.html" %}
+{% block title %}Profile{% endblock %}
+{% block settings %}
+{% set me = request.state.user %}
+<div class="settings-head"><h1>Profile</h1><p class="lede">Your name, your password and where you are signed in.</p></div>
+{% if must %}<div class="callout info" role="status">{{ ui.icon("info") }}<div><strong>Choose a new password to continue.</strong> Your admin set a temporary password for this account.</div></div>{% endif %}
+{% if error %}<div class="flash error" role="alert" data-testid="settings-error">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+{% if saved %}<div class="flash info" role="status" data-testid="settings-saved">{{ ui.icon("check") }}<span>{{ {"profile": "Your name is saved", "password": "Your password is changed; other sessions were signed out", "sessions": "Your other sessions are signed out"}.get(saved, "Saved") }}</span></div>{% endif %}
+
+{% if me.is_local %}
+<section class="set-section">
+  <p>Sign-in is off, so you are using the built-in admin. Accounts, passwords and tokens apply once an operator sets <code>INGEST_AUTH=on</code>.</p>
+</section>
+{% else %}
+<section class="set-section" aria-labelledby="p-who">
+  <h2 id="p-who">Account</h2>
+  <form method="post" action="/settings/profile" class="set-row">
+    <div class="set-label"><strong>Name</strong><span class="hint">Shown in the audit log and to admins.</span></div>
+    <div class="set-control inline"><input class="input" name="name" value="{{ record.name }}" maxlength="80" required data-testid="profile-name"><button class="btn" type="submit">Save</button></div>
+  </form>
+  <div class="set-row"><div class="set-label"><strong>Email</strong><span class="hint">Your sign-in name. An admin can change it.</span></div><div class="set-control mono">{{ record.email }}</div></div>
+  <div class="set-row"><div class="set-label"><strong>Role</strong><span class="hint">{{ role_help if role_help is defined else "" }}</span></div><div class="set-control"><span class="tag strong">{{ me.role_label }}</span></div></div>
+</section>
+
+<section class="set-section" aria-labelledby="p-pass">
+  <h2 id="p-pass">Password</h2>
+  <form method="post" action="/settings/password" class="set-form">
+    <div class="field"><label for="pw-cur">Current password</label><input id="pw-cur" class="input" type="password" name="current" autocomplete="current-password" required data-testid="pw-current"></div>
+    <div class="field"><label for="pw-new">New password</label><input id="pw-new" class="input" type="password" name="new" autocomplete="new-password" minlength="{{ min }}" required data-testid="pw-new"><div class="hint">At least {{ min }} characters.</div></div>
+    <div class="field"><label for="pw-confirm">Confirm new password</label><input id="pw-confirm" class="input" type="password" name="confirm" autocomplete="new-password" required data-testid="pw-confirm"></div>
+    <div><button class="btn primary" type="submit" data-testid="pw-save">Change password</button></div>
+  </form>
+</section>
+
+<section class="set-section" aria-labelledby="p-sess">
+  <h2 id="p-sess">Where you're signed in</h2>
+  <table class="data compact">
+    <thead><tr><th>Device</th><th>Signed in</th><th>Last active</th></tr></thead>
+    <tbody>
+    {% for s in sessions %}
+      <tr><td class="ua" title="{{ s.user_agent }}">{{ (s.user_agent or "Unknown device")[:70] }}</td><td>{{ s.created_at|ago }}</td><td>{{ s.last_seen_at|ago }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if sessions|length > 1 %}
+  <form method="post" action="/settings/sessions/end-others"><button class="btn" type="submit">Sign out everywhere else</button></form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

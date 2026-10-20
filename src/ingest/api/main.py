@@ -3,7 +3,6 @@
 import os
 import shutil
 import tempfile
-from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -14,8 +13,16 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ingest.api import queries
 from ingest.core.contracts import list_contracts, load_contract
-from ingest.core.pipeline import execute_batch, get_batch, run_pipeline, stored_path, submit_upload
+from ingest.core.pipeline import (
+    ReprocessConflict,
+    execute_batch,
+    get_batch,
+    run_pipeline,
+    stored_path,
+    submit_upload,
+)
 from ingest.db.models import Batch, RejectedRecord
 
 HERE = Path(__file__).parent
@@ -63,6 +70,16 @@ def paged(items: list, total: int, page: int, page_size: int) -> dict:
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
+async def spool_upload(upload) -> Path:
+    """Copy a multipart upload to a temp file (the caller deletes it)."""
+    fd, tmp_path = tempfile.mkstemp(suffix=Path(upload.filename or "upload.csv").suffix)
+    os.close(fd)
+    with open(tmp_path, "wb") as f:
+        shutil.copyfileobj(upload.file, f)
+    await upload.close()
+    return Path(tmp_path)
+
+
 def default_contract() -> str:
     names = sorted({n for n, _ in list_contracts()})
     if len(names) == 1:
@@ -81,6 +98,9 @@ def create_app(engine=None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_: Request, exc: RequestValidationError):
         return err("VALIDATION_ERROR", str(exc)[:1000], 422)
+
+    def bad_date(e: ValueError) -> JSONResponse:
+        return err("VALIDATION_ERROR", f"from/to must be YYYY-MM-DD or ISO 8601: {e}", 422)
 
     def sess() -> Session:
         return Session(eng)
@@ -112,20 +132,13 @@ def create_app(engine=None) -> FastAPI:
             load_contract(contract_ref)
         except (FileNotFoundError, ValueError) as e:
             return err("INVALID_CONTRACT", str(e), 400)
-        fd, tmp_path = tempfile.mkstemp(suffix=Path(upload.filename or "upload.csv").suffix)
-        os.close(fd)
-        with open(tmp_path, "wb") as f:
-            shutil.copyfileobj(upload.file, f)
-        await upload.close()
-
+        tmp_path = await spool_upload(upload)
         try:
-            submitted = submit_upload(
-                Path(tmp_path), contract_ref, engine=eng, file_name=upload.filename
-            )
+            submitted = submit_upload(tmp_path, contract_ref, engine=eng, file_name=upload.filename)
         except (FileNotFoundError, ValueError) as e:
-            Path(tmp_path).unlink(missing_ok=True)
             return err("INVALID_CONTRACT", str(e), 400)
-        Path(tmp_path).unlink(missing_ok=True)  # stored copy lives under data/uploads
+        finally:
+            tmp_path.unlink(missing_ok=True)  # stored copy lives under data/uploads
         if submitted["skipped"]:
             return JSONResponse(
                 {
@@ -152,27 +165,14 @@ def create_app(engine=None) -> FastAPI:
         page: int = 1,
         page_size: int = 20,
     ):
-        stmt = select(Batch).order_by(Batch.created_at.desc())
-        if status:
-            stmt = stmt.where(Batch.status == status)
-        if contract:
-            if "@" in contract:
-                cname, _, cver = contract.partition("@")
-                cver = cver.lstrip("v")
-                stmt = stmt.where(Batch.contract_name == cname)
-                if cver.isdigit():
-                    stmt = stmt.where(Batch.contract_version == int(cver))
-            else:
-                stmt = stmt.where(Batch.contract_name == contract)
-        if q:
-            like = f"%{q}%"
-            stmt = stmt.where(Batch.file_name.ilike(like) | Batch.batch_id.ilike(like))
-        if date_from:
-            stmt = stmt.where(Batch.created_at >= datetime.fromisoformat(date_from))
-        if date_to:
-            stmt = stmt.where(Batch.created_at <= datetime.fromisoformat(date_to))
+        try:
+            stmt = queries.batches_stmt(
+                status=status, contract=contract, q=q, date_from=date_from, date_to=date_to
+            )
+        except ValueError as e:
+            return bad_date(e)
         with sess() as s:
-            total = s.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+            total = queries.count(s, stmt)
             rows = s.execute(stmt.offset((page - 1) * page_size).limit(page_size)).scalars().all()
         return paged([batch_out(b) for b in rows], total, page, page_size)
 
@@ -204,7 +204,7 @@ def create_app(engine=None) -> FastAPI:
         if column:
             stmt = stmt.where(RejectedRecord.column_name == column)
         with sess() as s:
-            total = s.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+            total = queries.count(s, stmt)
             rows = s.execute(stmt.offset((page - 1) * page_size).limit(page_size)).scalars().all()
         return paged([rejection_out(r) for r in rows], total, page, page_size)
 
@@ -214,21 +214,9 @@ def create_app(engine=None) -> FastAPI:
         if b is None:
             return err("BATCH_NOT_FOUND", f"unknown batch {batch_id}", 404)
         with sess() as s:
-            counts = s.execute(
-                select(RejectedRecord.reason_code, func.count())
-                .where(RejectedRecord.batch_id == batch_id)
-                .group_by(RejectedRecord.reason_code)
-                .order_by(func.count().desc())
-            ).all()
-            n_rows = s.execute(
-                select(func.count(func.distinct(RejectedRecord.row_number))).where(
-                    RejectedRecord.batch_id == batch_id
-                )
-            ).scalar_one()
-        reasons = [
-            {"reason_code": code, "count": n, "pct": round(100 * n / n_rows, 1) if n_rows else 0.0}
-            for code, n in counts
-        ]
+            n_rows, reasons = queries.reason_breakdown(s, batch_id)
+        for r in reasons:
+            del r["sample_message"]
         return {"batch_id": batch_id, "rejected_rows": n_rows, "reasons": reasons}
 
     @app.get("/api/batches/{batch_id}/reject-report.csv")
@@ -298,6 +286,9 @@ def create_app(engine=None) -> FastAPI:
         ref = (body or {}).get("contract") or b.contract_name  # bare name → latest
         try:
             run_pipeline(stored_path(b), ref, engine=eng, reprocess_batch_id=batch_id)
+        except ReprocessConflict as e:
+            body = {"error": "REPROCESS_CONFLICT", "detail": str(e)}
+            return JSONResponse(body | {"existing_batch_id": e.existing_batch_id}, status_code=409)
         except (ValueError, FileNotFoundError) as e:
             return err("INVALID_CONTRACT", str(e), 400)
         out = batch_out(get_batch(eng, batch_id))
@@ -314,42 +305,23 @@ def create_app(engine=None) -> FastAPI:
         page: int = 1,
         page_size: int = 20,
     ):
-        stmt = (
-            select(
-                RejectedRecord.batch_id,
-                Batch.file_name,
-                Batch.contract_name,
-                Batch.contract_version,
-                func.count().label("count"),
+        try:
+            stmt = queries.audit_stmt(
+                reason_code=reason_code, contract=contract, date_from=date_from, date_to=date_to
             )
-            .join(Batch, Batch.batch_id == RejectedRecord.batch_id)
-            .group_by(
-                RejectedRecord.batch_id,
-                Batch.file_name,
-                Batch.contract_name,
-                Batch.contract_version,
-            )
-            .order_by(func.count().desc())
-        )
-        if reason_code:
-            stmt = stmt.where(RejectedRecord.reason_code == reason_code)
-        if contract:
-            stmt = stmt.where(Batch.contract_name == contract)
-        if date_from:
-            stmt = stmt.where(Batch.created_at >= datetime.fromisoformat(date_from))
-        if date_to:
-            stmt = stmt.where(Batch.created_at <= datetime.fromisoformat(date_to))
+        except ValueError as e:
+            return bad_date(e)
         with sess() as s:
-            total = s.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+            total = queries.count(s, stmt)
             rows = s.execute(stmt.offset((page - 1) * page_size).limit(page_size)).all()
         return paged(
             [
                 {
-                    "batch_id": r[0],
-                    "file_name": r[1],
-                    "contract_name": r[2],
-                    "contract_version": r[3],
-                    "count": r[4],
+                    "batch_id": r.batch_id,
+                    "file_name": r.file_name,
+                    "contract_name": r.contract_name,
+                    "contract_version": r.contract_version,
+                    "count": r.count,
                 }
                 for r in rows
             ],
@@ -385,37 +357,32 @@ def create_app(engine=None) -> FastAPI:
     # ---- metrics ----
     @app.get("/api/metrics/summary")
     def metrics():
-        today = date.today()
         with sess() as s:
-            batches_today = s.execute(
-                select(func.count()).select_from(Batch).where(func.date(Batch.created_at) == today)
-            ).scalar_one()
-            acc = s.execute(
-                select(func.coalesce(func.sum(Batch.accepted_rows), 0)).where(
-                    func.date(Batch.created_at) == today
-                )
-            ).scalar_one()
-            rej = s.execute(
-                select(func.coalesce(func.sum(Batch.rejected_rows), 0)).where(
-                    func.date(Batch.created_at) == today
-                )
-            ).scalar_one()
-            failed = s.execute(
-                select(func.count())
-                .select_from(Batch)
-                .where(Batch.status == "failed", func.date(Batch.created_at) == today)
-            ).scalar_one()
-        return {
-            "batches_today": batches_today,
-            "rows_accepted_today": int(acc or 0),
-            "rows_rejected_today": int(rej or 0),
-            "failed_batches_today": failed,
-        }
+            return queries.metrics_today(s)
 
     # ---- dashboard pages ----
+    from ingest.api.accounts import THEME_COOKIE, register_accounts
+    from ingest.api.datasources import register_datasources
     from ingest.api.pages import register_pages
+    from ingest.api.security import AccessMiddleware
+    from ingest.api.workspace import register_workspace
 
+    def can(request: Request, *perms: str) -> bool:
+        have = getattr(request.state, "perms", set())
+        return all(p in have for p in perms)
+
+    def theme(request: Request) -> str:
+        user = getattr(request.state, "user", None)
+        if user is not None and not user.is_local:
+            return (user.preferences or {}).get("theme", "system")
+        return request.cookies.get(THEME_COOKIE, "system")
+
+    templates.env.globals.update(can=can, theme=theme)
+    register_accounts(app, eng, templates)
+    register_workspace(app, eng, templates)  # first: /contracts/new must beat /contracts/{name}
+    register_datasources(app, eng, templates)
     register_pages(app, eng, templates)
+    app.add_middleware(AccessMiddleware, engine=eng, templates=templates)
     return app
 
 

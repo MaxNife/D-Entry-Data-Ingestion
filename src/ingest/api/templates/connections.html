@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}Connections{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Connections</h1>
+    <p class="lede">Your own databases. Use a table as a <strong>source</strong> (validate it against a contract, or import it), or make it a contract's <strong>destination</strong> so accepted rows load there. Run history and rejected rows always stay in the platform database.</p>
+  </div>
+  {% if can(request, "connections") %}<div class="actions"><a class="btn primary" href="/connections/new" data-testid="new-connection">{{ ui.icon("plus") }}New connection</a></div>{% endif %}
+</div>
+{{ ui.flash(flash) if flash }}
+<section class="panel">
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr><th>Name</th><th>Type</th><th class="col-opt">Where</th><th>Status</th><th class="col-opt">Destination of</th></tr></thead>
+    <tbody>
+    {% for r in rows %}{% set c = r.c %}
+      <tr class="row-link" data-testid="connection-row">
+        <td class="cell-file"><a class="stretch" href="/connections/{{ c.name }}"><span class="file-name">{{ c.name }}</span></a></td>
+        <td>{{ kinds[c.kind].label }}</td>
+        <td class="mono cell-muted col-opt">{% if c.kind == "sqlite" %}{{ c.database }}{% else %}{{ c.username ~ "@" if c.username }}{{ c.host }}{{ ":" ~ c.port if c.port }}/{{ c.database }}{% endif %}</td>
+        <td>{% if c.last_test_ok %}<span class="badge ok">{{ ui.icon("check-circle", "badge-icon") }}<span>Connected</span></span>{% elif c.last_test_ok is false %}<span class="badge bad" title="{{ c.last_test_message }}">{{ ui.icon("x-circle", "badge-icon") }}<span>Failing</span></span>{% else %}<span class="badge">{{ ui.icon("clock", "badge-icon") }}<span>Untested</span></span>{% endif %}
+          <span class="hint">{{ c.last_tested_at|ago if c.last_tested_at }}</span></td>
+        <td class="col-opt lift">{% for n in r.used_by %}<a class="tag" href="/contracts/{{ n }}">{{ n }}</a> {% else %}<span class="cell-muted">—</span>{% endfor %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">{{ ui.empty("plug", "No connections yet", "Add PostgreSQL, SQL Server or SQLite to validate its tables or load into it.") }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

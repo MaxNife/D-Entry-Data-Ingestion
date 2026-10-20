@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}{{ t.table if t else "Tables" }}{% endblock %}
+{% macro export_menu(key, loads=[]) -%}
+<details class="menu">
+  <summary class="btn primary" data-testid="export-menu">{{ ui.icon("download") }}Export{{ ui.icon("chevron-down") }}</summary>
+  <form class="menu-pop menu-form" action="/tables/{{ key }}/export" method="get" data-no-loader>
+    <fieldset><legend>Format</legend>
+      {% for key, (_, label) in formats.items() %}<label class="check"><input type="radio" name="format" value="{{ key }}" {% if loop.first %}checked{% endif %}> {{ label }}</label>{% endfor %}
+    </fieldset>
+    {% if loads %}
+    <label class="field">Rows from
+      <select name="batch"><option value="">Every upload (the whole table)</option>{% for b in loads %}<option value="{{ b.batch_id }}">{{ b.file_name }} · {{ b.batch_id[:8] }}</option>{% endfor %}</select>
+    </label>
+    {% endif %}
+    <label class="check"><input type="checkbox" name="system" value="1"> Include batch_id, row_key, loaded_at</label>
+    <button type="submit" class="btn primary" data-testid="export-submit">{{ ui.icon("download") }}Download</button>
+  </form>
+</details>
+{%- endmacro %}
+{% block content %}
+{% if not t %}
+<div class="page-head">
+  <div>
+    <h1>Tables</h1>
+    <p class="lede">Every table that contracts load into. Each upload adds its rows to the same table, and a row with the same key is updated rather than duplicated, so a table holds everything collected so far.</p>
+  </div>
+  {% if can(request, "sql") %}<div class="actions"><a class="btn" href="/query">{{ ui.icon("terminal") }}SQL editor</a></div>{% endif %}
+</div>
+<section class="panel">
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr><th>Table</th><th>Fed by</th><th class="num">Rows</th><th class="num col-opt">Uploads</th><th class="num col-opt">Columns</th><th class="col-opt">Last loaded</th></tr></thead>
+    <tbody>
+    {% for e in tables %}
+      <tr class="row-link" data-testid="table-row">
+        <td class="cell-file"><a class="stretch" href="/tables/{{ e.key }}"><span class="file-name mono">{{ e.table }}</span></a><span class="file-id">{% if e.connection %}{{ e.connection }}{% else %}Platform database{% endif %}</span></td>
+        <td class="lift">{% for c in e.contracts %}<a class="tag" href="/contracts/{{ c }}">{{ c }}</a> {% endfor %}</td>
+        {% if e.stats %}
+        <td class="num">{{ e.stats.rows|num }}</td><td class="num col-opt">{{ e.stats.batches|num }}</td><td class="num col-opt">{{ e.stats.columns }}</td>
+        <td class="nowrap cell-muted col-opt">{{ e.stats.last_loaded|ago }}</td>
+        {% elif e.error %}
+        <td colspan="4" class="is-bad">Cannot reach {{ e.connection }}: {{ e.error }}</td>
+        {% else %}
+        <td colspan="4" class="cell-muted">Not created yet. The first upload creates it.</td>
+        {% endif %}
+      </tr>
+    {% else %}
+      <tr><td colspan="6">{{ ui.empty("table", "No tables yet", "Create a contract; its target table appears here after the first upload.") }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% else %}
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/tables">Tables</a>{{ ui.icon("chevron") }}{% if t.connection %}<a href="/connections/{{ t.connection }}">{{ t.connection }}</a>{{ ui.icon("chevron") }}{% endif %}<span class="mono">{{ t.table }}</span></nav>
+<div class="page-head">
+  <div class="head-main">
+    <div class="title-row"><span class="title-icon">{{ ui.icon("table") }}</span><h1 class="mono">{{ t.table }}</h1></div>
+    <p class="lede">{% if t.connection %}In <a href="/connections/{{ t.connection }}">{{ t.connection }}</a> · {% endif %}Fed by {% for c in t.contracts %}<a href="/contracts/{{ c }}">{{ c }}</a>{{ ", " if not loop.last }}{% endfor %}{% if stats %} · {{ stats.rows|num }} rows from {{ stats.batches|num }} {{ "upload" if stats.batches == 1 else "uploads" }} · last loaded {{ stats.last_loaded|ago }}{% endif %}</p>
+  </div>
+  {% if not missing %}
+  <div class="actions">
+    {% if can(request, "sql") %}<a class="btn" href="/query?{{ qs(sql='SELECT *\nFROM ' ~ t.table ~ '\nLIMIT 100', run=1, db=t.connection) }}">{{ ui.icon("terminal") }}Query</a>{% endif %}
+    {% if can(request, "download") %}{{ export_menu(t.key, loads) }}{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if missing %}
+<section class="panel">{{ ui.empty("table", "Not created yet", "The first upload under " ~ t.contracts|join(", ") ~ " creates this table.") }}</section>
+{% else %}
+<div class="tabs" role="tablist">
+  {% for key, label in [("data", "Data"), ("schema", "Schema"), ("loads", "Loads")] %}
+  <a role="tab" href="/tables/{{ t.key }}?tab={{ key }}" aria-selected="{{ 'true' if tab == key else 'false' }}">{{ label }}{% if key == "loads" %}<span class="tab-n">{{ loads|length }}</span>{% elif key == "schema" %}<span class="tab-n">{{ stats.columns }}</span>{% endif %}</a>
+  {% endfor %}
+</div>
+
+{% if tab == "data" %}
+{% set d = data %}
+<section class="panel">
+  <form method="get" class="filterbar" role="search">
+    <input type="hidden" name="tab" value="data">
+    <label class="search">{{ ui.icon("search") }}<input type="search" name="q" value="{{ q }}" placeholder="Find a value in any column" aria-label="Search rows"></label>
+    <select name="batch" onchange="this.form.requestSubmit()" class="{{ 'is-set' if batch }}" aria-label="Filter by upload">
+      <option value="">Upload: all</option>
+      {% for b in loads %}<option value="{{ b.batch_id }}" {% if batch == b.batch_id %}selected{% endif %}>Upload: {{ b.file_name }} · {{ b.batch_id[:8] }}</option>{% endfor %}
+    </select>
+    <button class="btn" type="submit">Apply</button>
+    {% if q or batch %}<a class="btn subtle" href="/tables/{{ t.key }}">{{ ui.icon("x") }}Clear</a>{% endif %}
+    <span class="hint push">{{ d.total|num }} {{ "row" if d.total == 1 else "rows" }}</span>
+  </form>
+  <div class="table-wrap">
+    <table class="data rows-table">
+      <thead><tr>
+        {% for c in d.columns %}
+        {% set active = sort == c %}
+        <th class="{{ 'sys' if c in ['batch_id', 'row_key', 'loaded_at'] }}"><a class="sort" href="/tables/{{ t.key }}?{{ qs(tab='data', q=q, batch=batch, sort=c, desc=(0 if active and desc else 1) if active else 0) }}" title="{{ d.types[c] }}">{{ c }}{% if active %}{{ " ↓" if desc else " ↑" }}{% endif %}</a><span class="th-type">{{ d.types[c]|lower }}</span></th>
+        {% endfor %}
+      </tr></thead>
+      <tbody>
+      {% for r in d.rows %}
+        <tr>{% for v in r %}<td class="{{ 'sys mono' if d.columns[loop.index0] in ['batch_id', 'row_key', 'loaded_at'] }}">{% if v is none %}<span class="null">null</span>{% elif d.columns[loop.index0] == 'batch_id' %}<a class="mono" href="/batches/{{ v }}">{{ v[:8] }}</a>{% else %}{{ v|cell }}{% endif %}</td>{% endfor %}</tr>
+      {% else %}
+        <tr><td colspan="{{ d.columns|length }}">{{ ui.empty("search", "No rows match") }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if d.total > d.per_page %}
+  {% set last = ((d.total + d.per_page - 1) // d.per_page) %}
+  <nav class="pager" aria-label="Pages">
+    {% if d.page > 1 %}<a class="btn" href="/tables/{{ t.key }}?{{ qs(tab='data', q=q, batch=batch, sort=sort, desc=desc|int, page=d.page - 1) }}">Previous</a>{% else %}<span class="btn" aria-disabled="true">Previous</span>{% endif %}
+    <span class="hint">Page {{ d.page }} of {{ last }}</span>
+    {% if d.page < last %}<a class="btn" href="/tables/{{ t.key }}?{{ qs(tab='data', q=q, batch=batch, sort=sort, desc=desc|int, page=d.page + 1) }}">Next</a>{% else %}<span class="btn" aria-disabled="true">Next</span>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% elif tab == "schema" %}
+<section class="panel">
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr><th>Column</th><th>Type</th><th>Nullable</th><th>Notes</th></tr></thead>
+    <tbody>
+    {% for c in schema %}
+      <tr><td class="mono"><strong>{{ c.name }}</strong></td><td><span class="type">{{ c.type|lower }}</span></td><td>{{ "yes" if c.nullable else "no" }}</td>
+        <td>{% if c.system %}<span class="tag">added by the platform</span>{% endif %}{% if c.unique %} <span class="tag strong">unique</span>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% else %}
+<section class="panel">
+  <div class="table-wrap">
+  <table class="data batches">
+    <thead><tr><th class="col-opt">Start time</th><th>File</th><th class="col-opt">Contract</th><th>Status</th><th class="num col-opt">Rows</th><th class="num">Accepted</th><th class="num">Rejected</th><th class="col-opt col-bar"><span class="sr-only">Outcome</span></th><th class="num col-opt">Duration</th></tr></thead>
+    <tbody>{% for b in loads %}{{ ui.batch_row(b) }}{% else %}<tr><td colspan="9">{{ ui.empty("inbox", "No uploads yet") }}</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

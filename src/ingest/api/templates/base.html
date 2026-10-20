@@ -1,17 +1,271 @@
 <!doctype html>
-<html lang="en">
+{% set th = theme(request) %}
+{% set me = request.state.user %}
+{% set ws = request.state.settings %}
+<html lang="en"{% if th in ("light", "dark") %} data-theme="{{ th }}"{% endif %}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Ingest Platform{% endblock %}</title>
+<meta name="color-scheme" content="{{ th if th in ('light', 'dark') else 'light dark' }}">
+<title>{% block title %}Ingest{% endblock %} · {{ ws.workspace_name }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232272b4'/%3E%3Cpath d='M12 5v8M8.5 9.5 12 13l3.5-3.5M5 15v2.5A1.5 1.5 0 0 0 6.5 19h11a1.5 1.5 0 0 0 1.5-1.5V15' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
-<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script>try { if (localStorage.getItem("ingest.nav") === "collapsed") document.documentElement.classList.add("nav-collapsed"); } catch (e) {}</script>
+<script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
+{% import "_macros.html" as ui %}
+<a class="skip" href="#main">Skip to content</a>
+<div id="top-progress" aria-hidden="true"></div>
+{% set path = request.url.path %}
+{% macro nav_item(href, icon_name, label, active) -%}
+<a class="nav-item" href="{{ href }}" {% if active %}aria-current="page"{% endif %} title="{{ label }}">{{ ui.icon(icon_name) }}<span class="nav-label">{{ label }}</span></a>
+{%- endmacro %}
+
 <header class="topbar">
-  <a class="brand" href="/">Ingest Platform</a>
-  <nav><a href="/">Batches</a><a href="/rejections">Audit</a><a href="/upload">Upload</a></nav>
+  <button type="button" class="icon-btn" data-nav-toggle aria-label="Toggle sidebar" title="Toggle sidebar">{{ ui.icon("sidebar") }}</button>
+  <a class="brand" href="/">
+    <span class="brand-mark" aria-hidden="true">{{ ui.icon("upload") }}</span>
+    <span class="brand-name">{{ ws.workspace_name }}</span>
+  </a>
+  <form class="global-search" action="/" method="get" role="search">
+    {{ ui.icon("search") }}
+    <input type="search" name="q" placeholder="Search runs by file name or ID" aria-label="Search runs" value="{{ q if q is defined else '' }}" data-global-search>
+    <kbd aria-hidden="true">/</kbd>
+  </form>
+  <div class="topbar-end">
+    {% if me and me.is_local and can(request, "admin") %}
+    <a class="chip-warn" href="/admin/users" title="Anyone who can reach this address acts as an admin. Set INGEST_AUTH=on to require sign-in.">Sign-in is off</a>
+    {% endif %}
+    {% if me %}
+    <details class="menu user-menu" data-testid="user-menu">
+      <summary class="avatar" aria-label="Account: {{ me.name }}" title="{{ me.name }}">{{ me.initials }}</summary>
+      <div class="menu-pop user-pop" role="menu">
+        <div class="user-card">
+          <span class="avatar lg" aria-hidden="true">{{ me.initials }}</span>
+          <div><strong>{{ me.name }}</strong>{% if not me.is_local %}<div class="hint">{{ me.email }}</div>{% endif %}<span class="tag">{{ me.role_label }}</span></div>
+        </div>
+        <a role="menuitem" href="/settings/profile">{{ ui.icon("gear") }}<span>User settings</span></a>
+        {% if can(request, "admin") %}<a role="menuitem" href="/admin/users" data-testid="admin-settings">{{ ui.icon("shield") }}<span>Admin settings</span></a>{% endif %}
+        {% if not me.is_local %}
+        <form method="post" action="/logout"><button type="submit" role="menuitem" class="menu-btn" data-testid="sign-out">{{ ui.icon("arrow") }}<span>Sign out</span></button></form>
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
 </header>
-<main>{% block content %}{% endblock %}</main>
+
+<div class="shell">
+  <nav class="sidebar" aria-label="Primary">
+    {% if can(request, "ingest") %}
+    {% block new_button %}
+    <button type="button" class="new-btn" data-open="new-ingestion">{{ ui.icon("plus") }}<span class="nav-label">New ingestion</span></button>
+    {% endblock %}
+    {% endif %}
+    <div class="nav-group">
+      {{ nav_item("/", "runs", "Runs", path == "/" or path.startswith("/batches")) }}
+      {% if can(request, "ingest") %}{{ nav_item("/upload", "upload", "Add data", path.startswith("/upload")) }}{% endif %}
+    </div>
+    <div class="nav-group">
+      <div class="nav-heading">Catalog</div>
+      {{ nav_item("/contracts", "contract", "Contracts", path.startswith("/contracts")) }}
+      {{ nav_item("/tables", "table", "Tables", path.startswith("/tables")) }}
+      {{ nav_item("/connections", "plug", "Connections", path.startswith("/connections")) }}
+    </div>
+    <div class="nav-group">
+      <div class="nav-heading">Data quality</div>
+      {{ nav_item("/validations", "check-circle", "Validations", path.startswith("/validations")) }}
+      {{ nav_item("/rejections", "shield", "Rejection audit", path.startswith("/rejections")) }}
+    </div>
+    {% if can(request, "sql") %}
+    <div class="nav-group">
+      <div class="nav-heading">Analyze</div>
+      {{ nav_item("/query", "terminal", "SQL editor", path.startswith("/query")) }}
+    </div>
+    {% endif %}
+  </nav>
+  <div class="nav-scrim" data-nav-toggle aria-hidden="true"></div>
+
+  <main id="main" class="canvas">
+  {% block content %}{% endblock %}
+  </main>
+</div>
+
+{% if can(request, "ingest") %}
+{% block new_dialog %}
+<dialog class="drawer" id="new-ingestion" aria-labelledby="new-ingestion-title">
+  <div class="drawer-head">
+    <h2 id="new-ingestion-title">New ingestion</h2>
+    <button type="button" class="icon-btn" data-close aria-label="Close">{{ ui.icon("x") }}</button>
+  </div>
+  <form action="/upload" method="post" enctype="multipart/form-data" class="drawer-body upload-stack" data-upload>
+    {{ ui.upload_fields(contracts if contracts is defined else contract_choices(), origin="home") }}
+  </form>
+  <div class="drawer-foot hint">Rows that pass load into the contract's table; rows that fail are kept with the reason. <a href="/upload">Open the full Add data page →</a></div>
+</dialog>
+{% endblock %}
+{% endif %}
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  // Thin progress bar for every HTMX request.
+  var bar = document.getElementById("top-progress"), t;
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    if (e.detail.elt && e.detail.elt.closest("[data-quiet]")) return;  // background polls stay silent
+    clearTimeout(t); bar.className = "is-active";
+  });
+  document.addEventListener("htmx:afterRequest", function () {
+    if (bar.className !== "is-active") return;
+    bar.className = "is-done"; t = setTimeout(function () { bar.className = ""; }, 400);
+  });
+
+  // Page loader: following a link or submitting a form dims the page and runs the top bar
+  // until the next page arrives. Downloads, new tabs and in-page links are left alone.
+  var navTimer;
+  function navigating() {
+    root.classList.add("is-navigating"); bar.className = "is-active";
+    clearTimeout(navTimer);
+    navTimer = setTimeout(stopNavigating, 10000);  // a link that turned out to be a download
+  }
+  function stopNavigating() { root.classList.remove("is-navigating"); if (bar.className === "is-active") bar.className = ""; }
+  window.addEventListener("pageshow", stopNavigating);
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest("a[href]");
+    if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (a.hasAttribute("download") || a.target === "_blank" || a.closest("[data-no-loader]")) return;
+    var url = new URL(a.href, location.href);
+    if (url.origin !== location.origin || url.pathname.indexOf("/api/") === 0 || url.pathname === "/query/export") return;
+    if (url.pathname === location.pathname && url.search === location.search && url.hash) return;
+    navigating();
+  });
+  document.addEventListener("submit", function (e) {
+    var f = e.target;
+    if (e.defaultPrevented || f.matches("[data-upload], [data-no-loader]") || f.closest("dialog")) return;
+    navigating();
+  });
+
+  // Sidebar: collapses to icons on desktop, slides over on small screens.
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-nav-toggle]")) return;
+    if (window.matchMedia("(max-width: 900px)").matches) { root.classList.toggle("nav-open"); return; }
+    root.classList.toggle("nav-collapsed");
+    try { localStorage.setItem("ingest.nav", root.classList.contains("nav-collapsed") ? "collapsed" : "open"); } catch (err) {}
+  });
+
+  // Dialogs: [data-open=id] opens, [data-close] or a backdrop click closes.
+  document.addEventListener("click", function (e) {
+    var opener = e.target.closest("[data-open]");
+    if (opener) { var d = document.getElementById(opener.getAttribute("data-open")); if (d && d.showModal) d.showModal(); return; }
+    var closer = e.target.closest("[data-close]");
+    if (closer) { closer.closest("dialog").close(); return; }
+    if (e.target.tagName === "DIALOG") e.target.close();
+  });
+
+  // "/" focuses the global search.
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "/" || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    var s = document.querySelector("[data-global-search]"); if (s) { e.preventDefault(); s.focus(); }
+  });
+
+  // File dropzones: show the chosen file and accept drag-and-drop.
+  function wire(zone) {
+    var input = zone.querySelector("input[type=file]");
+    var title = zone.querySelector("[data-dz-title]"), sub = zone.querySelector("[data-dz-sub]");
+    var blank = [title.innerHTML, sub.innerHTML];
+    function show() {
+      var f = input.files && input.files[0];
+      zone.classList.toggle("has-file", !!f);
+      if (!f) { title.innerHTML = blank[0]; sub.innerHTML = blank[1]; return; }
+      title.textContent = f.name;
+      var kb = f.size / 1024;
+      sub.textContent = (kb < 1024 ? kb.toFixed(1) + " KB" : (kb / 1024).toFixed(1) + " MB") + " · ready to ingest";
+    }
+    input.addEventListener("change", show);
+    ["dragenter", "dragover"].forEach(function (ev) {
+      zone.addEventListener(ev, function (e) { e.preventDefault(); zone.classList.add("is-over"); });
+    });
+    ["dragleave", "drop"].forEach(function (ev) {
+      zone.addEventListener(ev, function () { zone.classList.remove("is-over"); });
+    });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files.length) { input.files = e.dataTransfer.files; show(); }
+    });
+    show();
+  }
+  document.querySelectorAll("[data-dropzone]").forEach(wire);
+
+  // File uploads: send with XHR so the form can show how much of the file has gone up,
+  // then follow the server's redirect. Without XHR/FormData the form submits normally.
+  function sizeText(bytes) { var kb = bytes / 1024; return kb < 1024 ? kb.toFixed(0) + " KB" : (kb / 1024).toFixed(1) + " MB"; }
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (e.defaultPrevented || !form.matches("[data-upload]") || !window.FormData || !window.XMLHttpRequest) return;
+    var file = form.querySelector("input[type=file]");
+    if (!file || !file.files || !file.files.length) return;  // let the browser report the missing file
+    e.preventDefault();
+    var submitter = e.submitter;
+    var action = (submitter && submitter.getAttribute("formaction")) || form.getAttribute("action");
+    var checking = submitter && submitter.getAttribute("formaction") === "/validate";
+    var data = new FormData(form);
+    if (submitter && submitter.name) data.append(submitter.name, submitter.value);
+    var box = form.querySelector(".upload-progress");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "upload-progress";
+      box.setAttribute("role", "status");
+      box.innerHTML = '<div class="pbar"><span></span></div><div class="upload-progress-text"></div>';
+      form.appendChild(box);
+    }
+    var bar = box.querySelector(".pbar"), fill = box.querySelector(".pbar span"), text = box.querySelector(".upload-progress-text");
+    var total = file.files[0].size;
+    function say(pct, msg) { fill.style.setProperty("--w", pct + "%"); text.textContent = msg; }
+    bar.classList.remove("is-indeterminate");
+    say(0, "Uploading " + file.files[0].name + "…");
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", action);
+    xhr.setRequestHeader("X-Upload", "xhr");  // failures redirect back with the message
+    xhr.upload.onprogress = function (ev) {
+      if (!ev.lengthComputable) return;
+      var pct = Math.round(100 * ev.loaded / ev.total);
+      say(pct, "Uploading " + file.files[0].name + " · " + pct + "% of " + sizeText(total));
+    };
+    xhr.upload.onload = function () {
+      bar.classList.add("is-indeterminate");
+      say(100, checking ? "Uploaded. Starting the check…" : "Uploaded. Starting the run…");
+    };
+    xhr.onload = function () {
+      var target = new URL(action, location.href).href;
+      if (xhr.responseURL && xhr.responseURL !== target) { location.assign(xhr.responseURL); return; }
+      document.open(); document.write(xhr.responseText); document.close();  // a page with an error message
+    };
+    xhr.onerror = function () {
+      bar.classList.remove("is-indeterminate");
+      say(0, "The upload did not finish. Check your connection and try again.");
+      form.querySelectorAll("button[type=submit]").forEach(function (b) { b.disabled = false; b.classList.remove("is-busy"); });
+    };
+    xhr.send(data);
+  });
+
+  // Disable submit buttons while a form posts, so a slow upload is not sent twice.
+  document.addEventListener("submit", function (e) {
+    var btn = e.submitter || e.target.querySelector("button[type=submit]");
+    var uploading = e.target.matches("[data-upload]");  // the XHR upload prevented the default itself
+    if (btn && (!e.defaultPrevented || uploading)) setTimeout(function () { btn.disabled = true; btn.classList.add("is-busy"); }, 0);
+  });
+
+  // Copy-to-clipboard buttons.
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-copy]");
+    if (!btn || !navigator.clipboard) return;
+    navigator.clipboard.writeText(btn.getAttribute("data-copy")).then(function () {
+      btn.classList.add("is-copied"); setTimeout(function () { btn.classList.remove("is-copied"); }, 1200);
+    });
+  });
+})();
+</script>
 </body>
 </html>

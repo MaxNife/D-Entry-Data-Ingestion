@@ -1,0 +1,43 @@
+{# The editable grid of rejected rows. Re-validation swaps this whole block. #}
+{% import "_macros.html" as ui %}
+<div id="fix-grid">
+  <div class="fix-summary" role="status" data-testid="fix-summary">
+    {% if check is defined and check %}
+      {% if check.missing %}
+        <span class="badge bad">{{ ui.icon("x-circle", "badge-icon") }}<span>Missing headers</span></span> {{ contract_ref }} needs {{ check.missing|join(", ") }}.
+      {% elif check.bad %}
+        <span class="badge warn">{{ ui.icon("warn-circle", "badge-icon") }}<span>{{ check.bad }} still failing</span></span>
+        <span class="badge ok">{{ ui.icon("check-circle", "badge-icon") }}<span>{{ check.good }} pass</span></span>
+        <span class="hint">against {{ contract_ref }}. Rows that still fail will be rejected again if you resubmit them.</span>
+      {% else %}
+        <span class="badge ok">{{ ui.icon("check-circle", "badge-icon") }}<span>All {{ check.good }} selected rows pass</span></span>
+        <span class="hint">against {{ contract_ref }}. Ready to resubmit.</span>
+      {% endif %}
+    {% else %}
+      <span class="hint">{{ grid.total|num }} rejected {{ "row" if grid.total == 1 else "rows" }}{% if grid.truncated %}: showing the first {{ grid.rows|length|num }}. Download the rest to fix them in a spreadsheet{% endif %}. Cells in red failed a check; hover them for the reason.</span>
+    {% endif %}
+  </div>
+  <div class="table-wrap fix-wrap">
+    <table class="data grid-edit fix-table">
+      <thead><tr>
+        <th class="center"><span class="sr-only">Include</span></th><th class="num">Row</th>
+        {% for h in grid.headers %}<th data-h="{{ h }}" class="mono">{{ h }}</th>{% endfor %}
+        <th>Issues</th>
+      </tr></thead>
+      <tbody>
+      {% for r in grid.rows %}
+        {% set issues = r.errors %}
+        <tr data-row="{{ r.row_number }}" class="{{ 'has-issues' if issues else 'is-clean' }}" data-testid="fix-row">
+          <td class="center"><input type="checkbox" data-include aria-label="Include row {{ r.row_number }}" {% if r.include is not defined or r.include %}checked{% endif %}></td>
+          <td class="num mono cell-muted">{{ r.row_number }}</td>
+          {% for h in grid.headers %}
+          {% set msgs = issues.get(h) %}
+          <td class="{{ 'is-err' if msgs }}"><input class="input cell" data-cell value="{{ r["values"][loop.index0] }}" aria-label="{{ h }}, row {{ r.row_number }}"{% if msgs %} title="{{ msgs|join(' · ') }}" aria-invalid="true"{% endif %}></td>
+          {% endfor %}
+          <td class="issues">{% for h, msgs in issues.items() %}{% for m in msgs %}<div><span class="mono">{{ "row" if h == "_row" else h }}</span> {{ m }}</div>{% endfor %}{% else %}<span class="ok-text">{{ ui.icon("check") }}passes</span>{% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>

@@ -1,0 +1,241 @@
+{# Shared UI pieces. Import with: {% import "_macros.html" as ui %} #}
+
+{% set ICONS = {
+  "upload": '<path d="M12 15V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+  "download": '<path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 20h16"/>',
+  "refresh": '<path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 4v7h-7"/>',
+  "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  "check": '<path d="M20 6 9 17l-5-5"/>',
+  "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  "alert": '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  "info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
+  "file": '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  "inbox": '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"/>',
+  "chevron": '<path d="m9 6 6 6-6 6"/>',
+  "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+  "arrow": '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+  "copy": '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  "layers": '<path d="m12 3 9 5-9 5-9-5 9-5z"/><path d="m3 13 9 5 9-5"/>',
+  "runs": '<path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="m3 6 1 1 2-2"/><path d="m3 12 1 1 2-2"/><path d="m3 18 1 1 2-2"/>',
+  "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  "catalog": '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+  "contract": '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>',
+  "shield": '<path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  "sidebar": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  "table": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 10v10"/>',
+  "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  "check-circle": '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+  "x-circle": '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/>',
+  "warn-circle": '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5"/><path d="M12 16h.01"/>',
+  "spin": '<path d="M12 3a9 9 0 1 0 9 9"/>',
+  "api": '<path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 5-4 14"/>',
+  "heart": '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
+  "gear": '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  "plug": '<path d="M9 7V3"/><path d="M15 7V3"/><path d="M6 7h12v4a6 6 0 0 1-12 0z"/><path d="M12 17v4"/>',
+  "server": '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01"/><path d="M7 16.5h.01"/>',
+  "terminal": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/>',
+  "edit": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  "trash": '<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>',
+  "wand": '<path d="m4 20 11-11"/><path d="m15 4 1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/><path d="M19 13v4"/><path d="M17 15h4"/>',
+  "play": '<path d="M7 4v16l13-8z"/>',
+  "branch": '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="9" r="2"/><path d="M6 8v8"/><path d="M18 11c0 4-6 3-10 6"/>',
+} %}
+
+{% set STATUS_ICON = {"completed": "check-circle", "partial": "warn-circle", "failed": "x-circle", "pending": "clock", "processing": "spin"} %}
+
+{% macro icon(name, cls="") -%}
+<svg class="icon {{ cls }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ ICONS[name]|safe }}</svg>
+{%- endmacro %}
+
+{# Status pill: icon + label, never colour alone. In-flight badges poll until the batch settles. #}
+{% set STATUS_HELP = {
+  "completed": "Every row was loaded",
+  "partial": "Some rows were loaded; the rest were rejected with a reason",
+  "failed": "The file could not be processed; no rows were loaded",
+  "pending": "Waiting to start",
+  "processing": "Checking and loading rows",
+} %}
+{% macro status_badge(b, poll=False) -%}
+<span data-testid="status-badge" data-status="{{ b.status }}" class="badge {{ status_class.get(b.status, 'idle') }}"
+  title="{{ b.failure_reason or STATUS_HELP.get(b.status, '') }}"
+  {%- if poll and b.status in ["pending", "processing"] %} data-quiet hx-get="/partials/batch-status/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>{{ icon(STATUS_ICON.get(b.status, "clock"), "badge-icon" ~ (" is-spinning" if b.status == "processing" else "")) }}<span class="badge-text">{{ b.status }}</span></span>
+{%- endmacro %}
+
+{# The result of a dry run, worded the same everywhere. #}
+{% set VALIDATION = {
+  "valid": ("ok", "check-circle", "All rows pass"),
+  "invalid": ("warn", "warn-circle", "Some rows fail"),
+  "failed": ("bad", "x-circle", "Could not read"),
+  "running": ("run", "spin", "Checking"),
+} %}
+{% macro validation_badge(status) -%}
+{% set cls, icon_name, label = VALIDATION.get(status, ("idle", "clock", status)) %}
+<span class="badge {{ cls }}" data-status="{{ status }}">{{ icon(icon_name, "badge-icon" ~ (" is-spinning" if status == "running" else "")) }}<span>{{ label }}</span></span>
+{%- endmacro %}
+
+{# accepted / rejected share of a batch as one thin bar. #}
+{% macro outcome_bar(b, size="") -%}
+{% set total = b.accepted_rows + b.rejected_rows %}
+<span class="outcome {{ size }}" role="img" aria-label="{{ pct(b.accepted_rows, total) }}% accepted, {{ pct(b.rejected_rows, total) }}% rejected">
+  {%- if total %}<span class="seg ok" style="--w: {{ pct(b.accepted_rows, total) }}%"></span><span class="seg bad" style="--w: {{ pct(b.rejected_rows, total) }}%"></span>{% endif -%}
+</span>
+{%- endmacro %}
+
+{% macro contract_ref(name, version, link=True) -%}
+{% if link %}<a class="ref" href="/contracts/{{ name }}?v={{ version }}">{% else %}<span class="ref">{% endif -%}
+<span class="ref-name">{{ name }}</span><span class="ref-ver">v{{ version }}</span>
+{%- if link %}</a>{% else %}</span>{% endif %}
+{%- endmacro %}
+
+{# The last runs of something as a strip of squares, oldest first (Fabric's "Run history"). #}
+{% macro run_history(recent) -%}
+<span class="runstrip" role="list" aria-label="Recent runs, oldest first">
+  {%- for r in recent %}<a role="listitem" class="runsq {{ status_class.get(r.status, 'idle') }}" href="/batches/{{ r.batch_id }}" title="{{ r.status|capitalize }} · {{ r.file_name }} · {{ r.created_at|ago }}"><span class="sr-only">{{ r.status }}: {{ r.file_name }}</span></a>{% endfor -%}
+</span>
+{%- endmacro %}
+
+{# Runs per day, stacked by outcome. Server-rendered columns; hover/focus shows the counts. #}
+{% macro runs_chart(days, day_max) -%}
+{% set top = [day_max, 1]|max %}
+<figure class="chart" aria-labelledby="chart-title">
+  <div class="chart-head">
+    <figcaption id="chart-title" class="chart-title">Runs per day <span class="hint">last {{ days|length }} days, UTC</span></figcaption>
+    <div class="legend" aria-hidden="true">
+      <span><span class="key ok"></span>Completed</span>
+      <span><span class="key warn"></span>Partial</span>
+      <span><span class="key bad"></span>Failed</span>
+    </div>
+  </div>
+  <div class="chart-plot">
+    <div class="chart-axis" aria-hidden="true">
+      {%- for t in ([0, top // 2, top] if top >= 2 else [0, top])|unique %}<span class="tick" style="--y: {{ (100 * t / top)|round(2) }}%">{{ t }}</span>{% endfor -%}
+    </div>
+    <ol class="chart-cols">
+      {% for d in days %}
+      {% set label = d.day.strftime("%a %d %b") %}
+      <li class="chart-col" tabindex="0" aria-label="{{ label }}: {{ d.total }} runs, {{ d.completed }} completed, {{ d.partial }} partial, {{ d.failed }} failed">
+        <span class="stack" style="--h: {{ (100 * d.total / top)|round(2) }}%">
+          {%- if d.failed %}<span class="sg bad" style="flex-grow: {{ d.failed }}"></span>{% endif -%}
+          {%- if d.partial %}<span class="sg warn" style="flex-grow: {{ d.partial }}"></span>{% endif -%}
+          {%- if d.completed %}<span class="sg ok" style="flex-grow: {{ d.completed }}"></span>{% endif -%}
+          {%- if d.total - d.completed - d.partial - d.failed > 0 %}<span class="sg run" style="flex-grow: {{ d.total - d.completed - d.partial - d.failed }}"></span>{% endif -%}
+        </span>
+        <span class="tip" aria-hidden="true"><strong>{{ label }}</strong>{{ d.total }} {{ "run" if d.total == 1 else "runs" }}<br><span class="key ok"></span>{{ d.completed }} completed<br><span class="key warn"></span>{{ d.partial }} partial<br><span class="key bad"></span>{{ d.failed }} failed</span>
+        <span class="chart-x" aria-hidden="true">{% if loop.last or (loop.index0 % 3 == 0 and loop.revindex0 >= 2) %}{{ d.day.strftime("%d %b") }}{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </div>
+</figure>
+{%- endmacro %}
+
+{# Live progress for a run (batch or dry run). The page around it polls and re-renders. #}
+{% macro progress_panel(title, prog, stages, current, details=[], rows_label="Rows read") -%}
+{% set pct = prog.pct %}
+<section class="panel progress-panel" data-testid="progress" aria-live="polite">
+  <div class="progress-head">
+    <span class="spinner" aria-hidden="true"></span>
+    <div class="progress-text">
+      <div class="progress-title">{{ title }}</div>
+      <div class="hint">{{ stages[current] }}. This page updates on its own; you can leave it and come back.</div>
+    </div>
+    {% if pct is not none %}<div class="progress-pct" data-testid="progress-pct">{{ pct|round|int }}%</div>{% endif %}
+  </div>
+  <div class="pbar{{ ' is-indeterminate' if pct is none }}" role="progressbar" aria-label="{{ title }}" aria-valuemin="0" aria-valuemax="100"{% if pct is not none %} aria-valuenow="{{ pct|round|int }}"{% endif %}>
+    <span style="--w: {{ pct or 0 }}%"></span>
+  </div>
+  <ol class="stepper" aria-label="Stages">
+    {% for s in stages %}
+    <li class="{{ 'is-done' if loop.index0 < current else 'is-active' if loop.index0 == current else '' }}">
+      <span class="step-dot" aria-hidden="true">{% if loop.index0 < current %}{{ icon("check") }}{% endif %}</span>{{ s }}
+    </li>
+    {% endfor %}
+  </ol>
+  <dl class="progress-stats">
+    <div><dt>{{ rows_label }}</dt><dd>{{ prog.done|num }}{% if prog.expected %} <span class="hint">of about {{ prog.expected|num }}</span>{% endif %}</dd></div>
+    {% for label, value in details %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+    <div><dt>Elapsed</dt><dd>{{ prog.elapsed|seconds }}</dd></div>
+    <div><dt>Speed</dt><dd>{% if prog.rate %}{{ prog.rate|round|int|num }} rows/s{% else %}—{% endif %}</dd></div>
+    <div><dt>Time left</dt><dd>{% if prog.eta %}about {{ prog.eta|seconds }}{% else %}—{% endif %}</dd></div>
+  </dl>
+</section>
+{%- endmacro %}
+
+{# One row of the batch history. In-flight rows refresh themselves. #}
+{% macro batch_row(b) -%}
+{% set live = b.status in ["pending", "processing"] %}
+<tr data-testid="batch-row" data-batch-id="{{ b.batch_id }}" class="row-link{% if live %} is-live{% endif %}"
+  {%- if live %} data-quiet hx-get="/partials/batch-row/{{ b.batch_id }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <td class="nowrap cell-muted col-opt" title="{{ b.created_at|utc }}">{{ b.created_at|ago }}</td>
+  <td class="cell-file">
+    <a class="stretch" href="/batches/{{ b.batch_id }}">
+      <span class="file-name" title="{{ b.file_name }}">{{ b.file_name }}</span>
+    </a>
+    <span class="file-id mono">{{ b.batch_id[:8] }}</span>
+  </td>
+  <td class="col-opt nowrap lift">{{ contract_ref(b.contract_name, b.contract_version) }}</td>
+  <td>{{ status_badge(b) }}</td>
+  <td class="num col-opt">{{ b.total_rows|num }}</td>
+  <td class="num" data-label="Accepted">{{ b.accepted_rows|num }}</td>
+  <td class="num{% if b.rejected_rows %} is-bad{% endif %}" data-label="Rejected">{{ b.rejected_rows|num }}</td>
+  <td class="col-opt col-bar">{{ outcome_bar(b) }}</td>
+  <td class="num nowrap cell-muted col-opt">{{ b|duration }}</td>
+</tr>
+{%- endmacro %}
+
+{# Contract picker: latest version by bare name, or a pinned name@vN. #}
+{% macro contract_options(contracts, selected="") -%}
+{% for c in contracts %}
+<optgroup label="{{ c.name }}">
+  <option value="{{ c.name }}" {% if selected == c.name %}selected{% endif %}>{{ c.name }} · latest (v{{ c.latest }})</option>
+  {% for v in c.versions %}
+  {% set ref = c.name ~ "@v" ~ v %}
+  <option value="{{ ref }}" {% if selected == ref %}selected{% endif %}>{{ ref }}</option>
+  {% endfor %}
+</optgroup>
+{% endfor %}
+{%- endmacro %}
+
+{% macro flash(message) -%}
+{% if message %}
+<div class="flash {{ message.kind }}" data-testid="upload-message" role="status">
+  {{ icon("alert" if message.kind == "error" else "info") }}
+  <span>{{ message.text }}{% if message.batch_id %} — <a href="/batches/{{ message.batch_id }}">view batch <span class="mono">{{ message.batch_id[:8] }}</span></a>{% endif %}.</span>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro empty(icon_name, title, sub="") -%}
+<div class="empty">
+  <span class="empty-icon">{{ icon(icon_name) }}</span>
+  <div class="empty-title">{{ title }}</div>
+  {% if sub %}<div class="empty-sub">{{ sub }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{# Upload form body, shared by the "New ingestion" panel and the Add data page. #}
+{% macro upload_fields(contracts, selected="", origin="home", preview_target="") -%}
+<input type="hidden" name="origin" value="{{ origin }}">
+<div class="step">
+  <div class="step-label"><span class="step-n">1</span>Choose a file</div>
+  <label class="dropzone" data-dropzone>
+    <input id="upload-file-{{ origin }}" type="file" name="file" required accept=".csv,.xlsx,.xls" data-testid="upload-file">
+    <span class="dz-icon">{{ icon("upload") }}</span>
+    <span class="dz-text">
+      <span class="dz-title" data-dz-title>Drop a file here or <u>browse</u></span>
+      <span class="dz-sub" data-dz-sub>CSV or Excel (.xlsx), up to 50&nbsp;MB</span>
+    </span>
+  </label>
+</div>
+<div class="step">
+  <label class="step-label" for="upload-contract-{{ origin }}"><span class="step-n">2</span>Validate against contract</label>
+  <select id="upload-contract-{{ origin }}" name="contract" required data-testid="upload-contract"
+    {%- if preview_target %} hx-get="/partials/contract" hx-target="{{ preview_target }}" hx-trigger="change"{% endif %}>
+    {{ contract_options(contracts, selected) }}
+  </select>
+</div>
+<div class="step-actions">
+  <button type="submit" class="btn" formaction="/validate" data-testid="validate-submit" title="Run every check and show the result; nothing is loaded">{{ icon("shield") }}Validate only</button>
+  <button type="submit" class="btn primary" data-testid="upload-submit">{{ icon("upload") }}Ingest file</button>
+</div>
+{%- endmacro %}

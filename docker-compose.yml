@@ -25,12 +25,20 @@ services:
       INGEST_UPLOAD_DIR: /app/data/uploads
       INGEST_CONTRACTS_DIR: /app/contracts
       INGEST_CHUNK_SIZE: 10000
+      # Encrypts stored connection passwords. Unset, a key is generated once into
+      # ./data/.secret_key (persisted by the volume below); keep that file backed up.
+      INGEST_SECRET_KEY: ${INGEST_SECRET_KEY:-}
+      # Require sign-in. The first visit opens a setup page that creates the first admin.
+      INGEST_AUTH: "on"
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
-      - ./contracts:/app/contracts:ro
-    command: ["uvicorn", "ingest.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+      # Read-write: contracts created and versioned from the UI are saved here.
+      - ./contracts:/app/contracts
+    # Create/upgrade the control tables before serving, so a fresh
+    # `docker compose up` works with no manual `alembic upgrade head`.
+    command: ["sh", "-c", "alembic upgrade head && uvicorn ingest.api.main:app --host 0.0.0.0 --port 8000"]
 
 volumes:
   pgdata:

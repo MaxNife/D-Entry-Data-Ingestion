@@ -1,13 +1,24 @@
-"""Chunk validation → structured rejections. src/ingest/core/validation.py — spec §7."""
+"""Chunk validation → structured rejections. src/ingest/core/validation.py — spec §7.
 
+Every check is a plain Python predicate on one cell value. Predicates run once
+per *distinct* value in a column, never once per cell, and the failing values
+are then mapped back onto the column with a vectorised ``isin``. Real feeds are
+highly repetitive (types, codes, dates), so this keeps validation cheap without
+re-implementing each check in pandas idiom — and without changing a single
+verdict. Rejections are emitted check by check, column by column, row by row,
+so the order (which the reject report joins on) is deterministic.
+"""
+
+import operator
+import re
+import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 from ingest.core.contracts import Contract
 from ingest.core.hashing import sha256_bytes
-
-BUILTIN_FALLBACK = "TYPE_MISMATCH"
 
 
 @dataclass
@@ -26,71 +37,20 @@ class ChunkResult:
     rejected_row_numbers: set[int] = field(default_factory=set)
 
 
-def _check_to_code(check: str | None) -> str:
-    import re
+# ---- cell predicates --------------------------------------------------------
 
-    c = re.sub(r"\(.*\)$", "", str(check or "").lower().strip())
-    if "not_null" in c or "nullable" in c:
-        return "MISSING_REQUIRED"
-    if "coerce" in c or "dtype" in c or "type" in c:
-        return "TYPE_MISMATCH"
-    if c in (
-        "greater_than_or_equal_to",
-        "less_than_or_equal_to",
-        "in_range",
-        "greater_than",
-        "less_than",
-    ):
-        return "OUT_OF_RANGE"
-    if "isin" in c:
-        return "NOT_IN_SET"
-    if "str_matches" in c or "pattern" in c:
-        return "PATTERN_MISMATCH"
-    if "str_length" in c or "length" in c:
-        return "OUT_OF_RANGE"
-    if "unique" in c:
-        return "DUPLICATE_KEY_IN_CHUNK"
-    return BUILTIN_FALLBACK
+_OPS = {
+    ">=": operator.ge,
+    "<=": operator.le,
+    "==": operator.eq,
+    "!=": operator.ne,
+    ">": operator.gt,
+    "<": operator.lt,
+}
+_COMPARISON = re.compile(r"\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
-
-def _row_key(row: pd.Series, contract: Contract) -> str:
-    keys = contract.key_columns
-    if keys is None:
-        vals = "|".join(
-            "" if pd.isna(row.get(c.name)) else str(row.get(c.name)) for c in contract.columns
-        )
-        return sha256_bytes(vals.encode("utf-8"))
-    return "|".join("" if pd.isna(row.get(k)) else str(row.get(k)) for k in keys)
-
-
-def _apply_comparison_rule(df: pd.DataFrame, col: str, check: str) -> pd.Series:
-    """Return boolean mask of VALID rows for checks like '>= 0', '< 1000000'."""
-    import operator
-    import re
-
-    m = re.match(r"\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$", check)
-    if not m:
-        raise ValueError(f"Unsupported check expression: {check!r}")
-    op_s, raw = m.groups()
-    ops = {
-        ">=": operator.ge,
-        "<=": operator.le,
-        "==": operator.eq,
-        "!=": operator.ne,
-        ">": operator.gt,
-        "<": operator.lt,
-    }
-    op = ops[op_s]
-    try:
-        val: object = float(raw)
-    except ValueError:
-        val = raw.strip("'\"")
-    s = df[col]
-    if isinstance(val, float):
-        return s.apply(
-            lambda v: False if pd.isna(v) else bool(op(float(v), val)) if _is_num(v) else False
-        )
-    return s.apply(lambda v: False if pd.isna(v) else bool(op(str(v), val)))
+#: Words a bool column accepts (either truth value).
+_BOOL_WORDS = {"1", "0", "true", "false", "t", "f", "yes", "no", "y", "n"}
 
 
 def _is_num(v) -> bool:
@@ -112,10 +72,49 @@ def _is_blank(v) -> bool:
     return isinstance(v, str) and v.strip() == ""
 
 
-def _looks_like_comparison(check: str) -> bool:
-    import re
+def _type_ok(v, col_type: str) -> bool:
+    """True if a non-blank cell can be coerced to the contract column type."""
+    if col_type == "int":
+        try:
+            int(float(v))
+            return True
+        except (TypeError, ValueError, OverflowError):
+            return False
+    if col_type in ("float", "decimal"):
+        return _is_num(v)
+    if col_type == "bool":
+        if isinstance(v, str):
+            return v.strip().lower() in _BOOL_WORDS
+        return isinstance(v, (bool, int, float))
+    if col_type in ("date", "datetime"):
+        try:
+            ts = pd.to_datetime(v)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        try:
+            return not pd.isna(ts)
+        except (TypeError, ValueError):
+            return True
+    return True
 
-    return bool(re.match(r"\s*(>=|<=|==|!=|>|<)\s*", check))
+
+def comparison_predicate(check: str) -> Callable[[object], bool]:
+    """Compile a rule like ``'>= 0'`` into a predicate on one cell value.
+
+    Numeric thresholds compare numerically and fail non-numeric cells; quoted
+    or bare non-numeric thresholds compare as strings.
+    """
+    m = _COMPARISON.match(check)
+    if not m:
+        raise ValueError(f"Unsupported check expression: {check!r}")
+    op = _OPS[m.group(1)]
+    raw = m.group(2)
+    try:
+        threshold = float(raw)
+    except ValueError:
+        text = raw.strip("'\"")
+        return lambda v: bool(op(str(v), text))
+    return lambda v: _is_num(v) and bool(op(float(v), threshold))
 
 
 def _load_custom(fn_path: str):
@@ -139,6 +138,54 @@ def _load_custom(fn_path: str):
         raise ImportError(f"custom rule {fn_path!r}: {mod!r} has no attribute {attr!r}") from None
 
 
+# ---- column helpers ---------------------------------------------------------
+
+
+def _blank_mask(s: pd.Series) -> pd.Series:
+    """Vectorised ``_is_blank``: NA, or a string that is empty after strip."""
+    na = s.isna()
+    is_str = s.map(type).eq(str) if s.dtype == object else pd.Series(False, index=s.index)
+    if s.dtype == "string":
+        is_str = ~na
+    stripped_empty = s.where(is_str & ~na, "x").astype(str).str.strip().eq("")
+    return (na | stripped_empty).astype(bool)
+
+
+def _failing(s: pd.Series, skip: pd.Series, ok: Callable[[object], bool]) -> pd.Series:
+    """Mask of cells (outside ``skip``) for which ``ok`` is False.
+
+    ``ok`` runs once per distinct value, not once per cell.
+    """
+    candidates = s[~skip]
+    if candidates.empty:
+        return pd.Series(False, index=s.index)
+    bad = [v for v in pd.unique(candidates.to_numpy(dtype=object)) if not ok(v)]
+    if not bad:
+        return pd.Series(False, index=s.index)
+    return s.isin(bad) & ~skip
+
+
+def _cell_text(df: pd.DataFrame, name: str) -> pd.Series:
+    """Column as text with NA → '' (a missing column is all '')."""
+    if name not in df.columns:
+        return pd.Series("", index=df.index, dtype=object)
+    s = df[name]
+    return s.astype(object).where(s.notna(), "").astype(str)
+
+
+def chunk_keys(df: pd.DataFrame, contract: Contract) -> pd.Series:
+    """The idempotency key of every row: the key columns joined with '|', or a
+    SHA-256 of every contract column when the contract keys on ``row_hash``."""
+    keys = contract.key_columns
+    names = [c.name for c in contract.columns] if keys is None else keys
+    joined = _cell_text(df, names[0])
+    for name in names[1:]:
+        joined = joined + "|" + _cell_text(df, name)
+    if keys is None:
+        return joined.map(lambda k: sha256_bytes(k.encode("utf-8")))
+    return joined
+
+
 def _maybe_rename(df: pd.DataFrame, contract: Contract) -> pd.DataFrame:
     """Rename source headers to contract names on a copy (pipeline already renames)."""
     internal = {c.name for c in contract.columns}
@@ -148,188 +195,146 @@ def _maybe_rename(df: pd.DataFrame, contract: Contract) -> pd.DataFrame:
     return df.rename(columns=mapping) if mapping else df
 
 
+# ---- the check ---------------------------------------------------------------
+
+
 def validate_chunk(
     df: pd.DataFrame,
     contract: Contract,
     row_offset: int,
     ref_values: dict[tuple[str, str], set] | None = None,
 ) -> ChunkResult:
-    from ingest.core.contracts import build_pandera_schema
-
     df = _maybe_rename(df, contract)
     ref_values = ref_values or {}
     rejections: list[Rejection] = []
     bad_idx: set = set()
+    position = {idx: pos for pos, idx in enumerate(df.index)}
 
     def reject(idx, code: str, msg: str, col: str | None = None):
-        pos = df.index.get_loc(idx) if idx in df.index else 0
-        row_number = row_offset + (pos if isinstance(pos, int) else 0) + 1
-        try:
-            off = df.at[idx, col] if col else None
-        except KeyError:
-            off = None
-        off_s = None if off is None or (isinstance(off, float) and pd.isna(off)) else str(off)
+        row_number = row_offset + position.get(idx, 0) + 1
+        off = df.at[idx, col] if col and col in df.columns else None
+        off_s = None if _is_blank(off) and not isinstance(off, str) else str(off)
         rejections.append(Rejection(row_number, code, msg, col, off_s))
         bad_idx.add(idx)
 
-    # 1. Required missing (explicit, deterministic across pandera versions).
-    for c in contract.columns:
-        if c.required and c.name in df.columns:
-            s = df[c.name]
-            missing = s.isna() | (s.astype(str).str.strip() == "") if c.type == "str" else s.isna()
-            for idx in df.index[missing.fillna(False)]:
-                reject(idx, "MISSING_REQUIRED", f"{c.name} is required", c.name)
+    def reject_mask(mask: pd.Series, code: str, msg: str, col: str | None) -> None:
+        for idx in df.index[mask.to_numpy(dtype=bool)]:
+            reject(idx, code, msg, col)
 
-    # 1b. Column attributes, element-wise (pandera only checks these when the
-    # whole column coerces, so string frames need explicit checks).
-    for c in contract.columns:
-        if c.name not in df.columns:
-            continue
-        s = df[c.name]
+    present = [c for c in contract.columns if c.name in df.columns]
+    blank = {c.name: _blank_mask(df[c.name]) for c in present}
+
+    # 1. Required missing. Strings count whitespace-only as missing.
+    for c in present:
+        if c.required:
+            missing = blank[c.name] if c.type == "str" else df[c.name].isna()
+            reject_mask(missing, "MISSING_REQUIRED", f"{c.name} is required", c.name)
+
+    # 1b. Column attributes.
+    for c in present:
+        s, skip = df[c.name], blank[c.name]
         if c.in_set is not None:
             allowed = set(c.in_set) | {str(x) for x in c.in_set}
-            for idx, v in s.items():
-                if _is_blank(v):
-                    continue
-                if v not in allowed and str(v) not in allowed:
-                    reject(idx, "NOT_IN_SET", f"{c.name} must be one of {list(c.in_set)}", c.name)
+            reject_mask(
+                _failing(s, skip, lambda v, a=allowed: v in a or str(v) in a),
+                "NOT_IN_SET",
+                f"{c.name} must be one of {list(c.in_set)}",
+                c.name,
+            )
         if c.pattern is not None:
-            import re as _re
-
-            rx = _re.compile(c.pattern)
-            for idx, v in s.items():
-                if _is_blank(v):
-                    continue
-                if not rx.search(str(v)):
-                    reject(idx, "PATTERN_MISMATCH", f"{c.name} does not match {c.pattern}", c.name)
+            rx = re.compile(c.pattern)
+            reject_mask(
+                _failing(s, skip, lambda v, rx=rx: bool(rx.search(str(v)))),
+                "PATTERN_MISMATCH",
+                f"{c.name} does not match {c.pattern}",
+                c.name,
+            )
         if c.min is not None or c.max is not None:
-            for idx, v in s.items():
-                if _is_blank(v) or not _is_num(v):
-                    continue
+            lo = None if c.min is None else float(c.min)
+            hi = None if c.max is None else float(c.max)
+
+            def in_range(v, lo=lo, hi=hi) -> bool:
+                if not _is_num(v):
+                    return True  # a type problem, reported as TYPE_MISMATCH
                 f = float(v)
-                if (c.min is not None and f < float(c.min)) or (
-                    c.max is not None and f > float(c.max)
-                ):
-                    reject(idx, "OUT_OF_RANGE", f"{c.name} out of range", c.name)
+                return not ((lo is not None and f < lo) or (hi is not None and f > hi))
+
+            reject_mask(
+                _failing(s, skip, in_range), "OUT_OF_RANGE", f"{c.name} out of range", c.name
+            )
         if c.max_length is not None:
-            for idx, v in s.items():
-                if _is_blank(v):
-                    continue
-                if len(str(v)) > c.max_length:
-                    reject(idx, "OUT_OF_RANGE", f"{c.name} exceeds max length", c.name)
+            too_long = ~skip & s.astype(str).str.len().gt(c.max_length)
+            reject_mask(too_long, "OUT_OF_RANGE", f"{c.name} exceeds max length", c.name)
 
-    # 2. Pandera schema (lazy) for types / sets / patterns / ranges.
-    # Validated on a copy: coercion must never mutate the caller's frame.
-    schema = build_pandera_schema(contract)
-    try:
-        schema.validate(df.copy(), lazy=True)
-    except Exception as e:  # pandera SchemaErrors
-        cases = getattr(e, "failure_cases", None)
-        if cases is not None:
-            for _, r in cases.iterrows():
-                col = r.get("column")
-                col = None if col in (None, "SCHEMA") else str(col)
-                code = _check_to_code(r.get("check"))
-                # Prefer MISSING_REQUIRED when a required col is null.
-                if code == "TYPE_MISMATCH" and col:
-                    spec = next((c for c in contract.columns if c.name == col), None)
-                    if spec and spec.required:
-                        try:
-                            if pd.isna(r.get("failure_case")):
-                                code = "MISSING_REQUIRED"
-                        except (TypeError, ValueError):
-                            pass
-                idx = r.get("index")
-                # dedupe identical (idx, code, col) from our explicit pass
-                if idx in df.index and not any(
-                    x.reason_code == code
-                    and x.column_name == col
-                    and x.row_number == row_offset + df.index.get_loc(idx) + 1
-                    for x in rejections
-                ):
-                    msg_full = f"{col} {r.get('check')} failed" if col else str(r.get("check"))
-                    reject(idx, code, msg_full, col)
+    # 1c. Type coercion for non-string columns.
+    for c in present:
+        if c.type != "str":
+            reject_mask(
+                _failing(df[c.name], blank[c.name], lambda v, t=c.type: _type_ok(v, t)),
+                "TYPE_MISMATCH",
+                f"{c.name} is not a valid {c.type}",
+                c.name,
+            )
 
-    # 3. Contract rules (own code/message).
+    # 2. Contract rules (own code/message). Blank cells are skipped: a missing
+    # value is already reported as MISSING_REQUIRED.
     for rule in contract.rules:
         col = rule.column
         fn_path = rule.function or rule.custom
-        is_custom = rule.check == "custom" or fn_path is not None
         if rule.check == "exists_in":
-            if col not in df.columns:
-                continue
-            valid = ref_values.get(
-                ((rule.reference or {}).get("table"), (rule.reference or {}).get("column"))
+            ref = rule.reference or {}
+            valid = ref_values.get((ref.get("table"), ref.get("column")))
+            if col not in df.columns or valid is None:
+                continue  # no reference loaded → rule skipped
+            valid_text = {str(x) for x in valid}
+            reject_mask(
+                _failing(df[col], blank[col], lambda v: str(v) in valid_text or v in valid),
+                rule.code,
+                rule.message,
+                col,
             )
-            if valid is None:
-                continue  # pipeline supplies; missing means skip (no reference loaded)
-            s = df[col]
-            for idx, v in s.items():
-                if pd.isna(v) or (isinstance(v, str) and v.strip() == ""):
-                    continue  # nulls already reported as MISSING_REQUIRED
-                if str(v) not in {str(x) for x in valid} and v not in valid:
-                    reject(idx, rule.code, rule.message, col)
-        elif is_custom:
-            import warnings
-
+        elif rule.check == "custom" or fn_path is not None:
             path = fn_path or rule.check
             try:
-                fn = _load_custom(path)
-            except (ImportError, ValueError) as e:
-                warnings.warn(f"skipping custom rule {rule.code}: {e}")
+                mask = _load_custom(path)(df)
+            except Exception as e:  # a broken custom rule must not sink the chunk
+                warnings.warn(f"skipping custom rule {rule.code}: {e}", stacklevel=2)
                 continue
-            try:
-                mask = fn(df)
-            except Exception as e:
-                warnings.warn(f"skipping custom rule {rule.code}: {e}")
-                continue
-            for idx, ok in mask.items():
-                if not bool(ok):
-                    reject(idx, rule.code, rule.message, col)
+            failing = ~mask.reindex(df.index, fill_value=True).astype(bool)
+            reject_mask(failing, rule.code, rule.message, col)
         else:
             if col not in df.columns:
                 continue
             try:
-                mask = _apply_comparison_rule(df, col, rule.check)
+                ok = comparison_predicate(rule.check)
             except ValueError:
                 continue
-            for idx, v in df[col].items():
-                if pd.isna(v) or (isinstance(v, str) and v.strip() == ""):
-                    continue  # nulls already reported as MISSING_REQUIRED
-                if not bool(mask.get(idx, True)):
-                    reject(idx, rule.code, rule.message, col)
+            reject_mask(_failing(df[col], blank[col], ok), rule.code, rule.message, col)
 
-    # 4. Duplicate keys inside this chunk: keep first, reject rest.
-    seen: dict[str, object] = {}
-    for idx, row in df.iterrows():
-        if idx in bad_idx:
-            continue
-        k = _row_key(row, contract)
-        if k in seen:
+    # 3. Duplicate keys inside this chunk: keep the first clean row, reject the rest.
+    clean = ~df.index.isin(list(bad_idx))
+    if clean.any():
+        keys = chunk_keys(df[clean], contract)
+        for idx, k in keys[keys.duplicated(keep="first")].items():
             reject(idx, "DUPLICATE_KEY_IN_CHUNK", f"duplicate key within chunk: {k[:16]}…", None)
-        else:
-            seen[k] = idx
 
-    # 5. One root cause per cell: a missing value or a type error shadows any
+    # 4. One root cause per cell: a missing value or a type error shadows any
     # other failure on the same (row, column) — e.g. 'abc' is TYPE_MISMATCH,
     # not also OUT_OF_RANGE.
-    shadowed: set[tuple[int, str | None]] = {
-        (r.row_number, r.column_name)
-        for r in rejections
-        if r.reason_code in ("MISSING_REQUIRED", "TYPE_MISMATCH")
-    }
+    root = ("MISSING_REQUIRED", "TYPE_MISMATCH")
+    shadowed = {(r.row_number, r.column_name) for r in rejections if r.reason_code in root}
     if shadowed:
         rejections = [
             r
             for r in rejections
-            if (r.row_number, r.column_name) not in shadowed
-            or r.reason_code in ("MISSING_REQUIRED", "TYPE_MISMATCH")
+            if r.reason_code in root or (r.row_number, r.column_name) not in shadowed
         ]
-        row_to_idx = {row_offset + p + 1: idx for p, idx in enumerate(df.index)}
-        bad_idx = {row_to_idx[n] for n in {r.row_number for r in rejections} if n in row_to_idx}
+        rows_left = {r.row_number for r in rejections}
+        bad_idx = {idx for idx, pos in position.items() if row_offset + pos + 1 in rows_left}
 
-    rejected_numbers = {r.row_number for r in rejections}
     accepted = df.drop(index=list(bad_idx), errors="ignore")
     return ChunkResult(
-        accepted=accepted, rejections=rejections, rejected_row_numbers=rejected_numbers
+        accepted=accepted,
+        rejections=rejections,
+        rejected_row_numbers={r.row_number for r in rejections},
     )

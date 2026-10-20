@@ -1,6 +1,7 @@
 """Chunk loading: upsert accepted rows + write rejections, one tx per chunk.
 src/ingest/core/loader.py — spec §8."""
 
+import json
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -66,6 +67,12 @@ def _norm(v, col_type: str = "str"):
     return v
 
 
+#: Reflected target tables, keyed by (database URL, table name). Reflection is
+#: several catalog round-trips; the table shape does not change mid-process, so
+#: doing it once per table instead of once per chunk matters on wide files.
+_TABLE_CACHE: dict[tuple[str, str], Table] = {}
+
+
 def ensure_target_table(engine, contract: Contract) -> Table:
     """Create the contract's target table if missing; return the real Table.
 
@@ -74,10 +81,16 @@ def ensure_target_table(engine, contract: Contract) -> Table:
     and create our own definition for the missing case, then reflect what is
     actually there so inserts bind against the true column types.
     """
+    key = (str(engine.url), contract.target_table)
+    cached = _TABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
     meta = MetaData()
+    # SQL Server cannot index (n)varchar(max); 450 characters is its unique-index ceiling.
+    key_type = Text if engine.dialect.name in ("postgresql", "sqlite") else String(450)
     cols = [
         Column("batch_id", String(36), nullable=False),
-        Column("row_key", Text, nullable=False, unique=True),
+        Column("row_key", key_type, nullable=False, unique=True),
         Column("loaded_at", DateTime(timezone=True), default=lambda: datetime.now(UTC)),
     ]
     for c in contract.columns:
@@ -92,7 +105,9 @@ def ensure_target_table(engine, contract: Contract) -> Table:
     )
     meta.create_all(bind=engine, tables=[table])
     reflected = MetaData()
-    return Table(contract.target_table, reflected, autoload_with=engine)
+    result = Table(contract.target_table, reflected, autoload_with=engine)
+    _TABLE_CACHE[key] = result
+    return result
 
 
 def row_key_for(record: dict, contract: Contract) -> str:
@@ -105,11 +120,27 @@ def row_key_for(record: dict, contract: Contract) -> str:
     return "|".join("" if record.get(k) is None else str(record.get(k)) for k in keys)
 
 
+def _normalized_column(series: pd.Series, col_type: str) -> list:
+    """``_norm`` over a column, computed once per distinct value."""
+    cache: dict = {}
+    out = []
+    for v in series.tolist():
+        if v not in cache:
+            cache[v] = _norm(v, col_type)
+        out.append(cache[v])
+    return out
+
+
 def records_from_frame(contract: Contract, df: pd.DataFrame, batch_id: str) -> list[dict]:
     now = datetime.now(UTC)
+    names = [c.name for c in contract.columns]
+    columns = [
+        _normalized_column(df[c.name], c.type) if c.name in df.columns else [None] * len(df)
+        for c in contract.columns
+    ]
     out = []
-    for _, row in df.iterrows():
-        rec = {c.name: _norm(row.get(c.name), c.type) for c in contract.columns}
+    for values in zip(*columns, strict=True):
+        rec = dict(zip(names, values, strict=True))
         rec["row_key"] = row_key_for(rec, contract)
         rec["batch_id"] = batch_id
         rec["loaded_at"] = now
@@ -129,10 +160,14 @@ def fetch_ref_values(engine, contract: Contract) -> dict[tuple[str, str], set]:
         return out
     from sqlalchemy import text
 
+    quote = engine.dialect.identifier_preparer.quote
     with engine.connect() as conn:
         for table, column in pairs:
+            table_sql = ".".join(quote(part) for part in table.split("."))  # schema.table
             try:
-                rows = conn.execute(text(f"SELECT DISTINCT {column} FROM {table}")).fetchall()
+                rows = conn.execute(
+                    text(f"SELECT DISTINCT {quote(column)} FROM {table_sql}")
+                ).fetchall()
             except Exception:
                 continue  # reference table missing → validation skips the rule
             out[(table, column)] = {r[0] for r in rows}
@@ -170,19 +205,120 @@ def record_chunk_failure(
                 error=str(error)[:2000],
             )
         )
-        for rn in range(row_start, row_end + 1):
-            conn.execute(
-                RejectedRecord.__table__.insert().values(
-                    batch_id=batch_id,
-                    row_number=rn,
-                    reason_code="LOAD_ERROR",
-                    reason_message=f"chunk failed at database level: {error}"[:2000],
-                    column_name=None,
-                    offending_value=None,
-                    original_row=originals.get(rn, {}),
-                )
-            )
+        _insert_many(
+            conn,
+            RejectedRecord.__table__,
+            [
+                {
+                    "batch_id": batch_id,
+                    "row_number": rn,
+                    "reason_code": "LOAD_ERROR",
+                    "reason_message": f"chunk failed at database level: {error}"[:2000],
+                    "column_name": None,
+                    "offending_value": None,
+                    "original_row": originals.get(rn, {}),
+                }
+                for rn in range(row_start, row_end + 1)
+            ],
+        )
     return row_end - row_start + 1
+
+
+def _copy_rows(conn, table_sql: str, columns: list[str], rows: list[dict]) -> None:
+    """Stream dict rows into a Postgres table with COPY, inside ``conn``'s transaction."""
+    quote = conn.dialect.identifier_preparer.quote
+    col_sql = ", ".join(quote(c) for c in columns)
+    with (
+        conn.connection.driver_connection.cursor() as cur,
+        cur.copy(f"COPY {table_sql} ({col_sql}) FROM STDIN") as copy,
+    ):
+        for row in rows:
+            copy.write_row(
+                [json.dumps(v) if isinstance(v, dict) else v for v in map(row.get, columns)]
+            )
+
+
+def _insert_many(conn, table, rows: list[dict]) -> None:
+    """Append rows: COPY on Postgres, one executemany elsewhere."""
+    if not rows:
+        return
+    if conn.dialect.name == "postgresql":
+        # COPY bypasses SQLAlchemy, so apply the model's Python-side defaults here.
+        defaults = {
+            c.name: c.default.arg(None) if c.default.is_callable else c.default.arg
+            for c in table.c
+            if c.name not in rows[0]
+            and c.default is not None
+            and (c.default.is_scalar or c.default.is_callable)
+        }
+        if defaults:
+            rows = [{**defaults, **r} for r in rows]
+        table_sql = conn.dialect.identifier_preparer.format_table(table)
+        _copy_rows(conn, table_sql, [c for c in rows[0] if c in table.c], rows)
+    else:
+        conn.execute(table.insert(), rows)
+
+
+def _upsert(conn, table: Table, contract: Contract, records: list[dict]) -> None:
+    """Insert accepted rows, resolving ``row_key`` conflicts per ``on_conflict``.
+
+    On Postgres the rows are COPY'd into a transaction-scoped staging table and
+    merged with one ``INSERT ... SELECT ... ON CONFLICT``. That is one round
+    trip per chunk instead of one per row, and the target's triggers and
+    constraints still fire on the real insert.
+    """
+    columns = [c for c in records[0] if c in table.c]
+    if conn.dialect.name not in ("postgresql", "sqlite"):
+        _upsert_portable(conn, table, contract, records)
+        return
+    if conn.dialect.name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as lite_insert
+
+        stmt = lite_insert(table)
+        if contract.on_conflict == "skip":
+            stmt = stmt.on_conflict_do_nothing(index_elements=["row_key"])
+        else:
+            update = {c.name: stmt.excluded[c.name] for c in table.c if c.name != "row_key"}
+            stmt = stmt.on_conflict_do_update(index_elements=["row_key"], set_=update)
+        conn.execute(stmt, records)
+        return
+
+    quote = conn.dialect.identifier_preparer.quote
+    target = conn.dialect.identifier_preparer.format_table(table)
+    col_sql = ", ".join(quote(c) for c in columns)
+    conn.exec_driver_sql(
+        f"CREATE TEMP TABLE _ingest_stage ON COMMIT DROP AS "
+        f"SELECT {col_sql} FROM {target} WITH NO DATA"
+    )
+    _copy_rows(conn, "_ingest_stage", columns, records)
+    if contract.on_conflict == "skip":
+        action = "DO NOTHING"
+    else:
+        sets = ", ".join(f"{quote(c)} = EXCLUDED.{quote(c)}" for c in columns if c != "row_key")
+        action = f"DO UPDATE SET {sets}"
+    conn.exec_driver_sql(
+        f"INSERT INTO {target} ({col_sql}) SELECT {col_sql} FROM _ingest_stage "
+        f"ON CONFLICT (row_key) {action}"
+    )
+
+
+def _upsert_portable(conn, table: Table, contract: Contract, records: list[dict]) -> None:
+    """Upsert for databases without ``ON CONFLICT`` (SQL Server): within the chunk's
+    transaction, replace (update) or keep (skip) rows whose ``row_key`` already exists.
+    Keys go in batches under SQL Server's 2,100-parameter limit."""
+    keys = [r["row_key"] for r in records]
+    existing: set = set()
+    for i in range(0, len(keys), 1000):
+        part = keys[i : i + 1000]
+        if contract.on_conflict == "skip":
+            existing |= set(
+                conn.execute(select(table.c.row_key).where(table.c.row_key.in_(part))).scalars()
+            )
+        else:
+            conn.execute(table.delete().where(table.c.row_key.in_(part)))
+    rows = [r for r in records if r["row_key"] not in existing]
+    if rows:
+        conn.execute(table.insert(), [{k: v for k, v in r.items() if k in table.c} for r in rows])
 
 
 def load_chunk(
@@ -196,6 +332,7 @@ def load_chunk(
     accepted: pd.DataFrame,
     rejections,
     originals: dict[int, dict],
+    target_engine=None,
 ) -> tuple[int, int]:
     """Load one chunk in its own transaction. Returns (accepted_rows, rejected_rows).
 
@@ -204,52 +341,50 @@ def load_chunk(
     On DB-level failure: roll back, mark chunk failed, record every row in the
     chunk as LOAD_ERROR in a separate transaction, and let the caller continue.
     """
-    table = ensure_target_table(engine, contract)
+    target_engine = target_engine or engine
+    table = ensure_target_table(target_engine, contract)
     records = records_from_frame(contract, accepted, batch_id)
+    rejection_rows = [
+        {
+            "batch_id": batch_id,
+            "row_number": r.row_number,
+            "reason_code": r.reason_code,
+            "reason_message": r.reason_message,
+            "column_name": r.column_name,
+            "offending_value": r.offending_value,
+            "original_row": originals.get(r.row_number, {}),
+        }
+        for r in rejections
+    ]
+
+    def audit(conn) -> None:
+        if rejection_rows:
+            _insert_many(conn, RejectedRecord.__table__, rejection_rows)
+        conn.execute(
+            BatchChunk.__table__.insert().values(
+                batch_id=batch_id,
+                chunk_index=chunk_index,
+                row_start=row_start,
+                row_end=row_end,
+                status="committed",
+                error=None,
+            )
+        )
 
     try:
-        with engine.begin() as conn:
+        if target_engine is engine:  # one database: rows and audit trail commit together
+            with engine.begin() as conn:
+                if records:
+                    _upsert(conn, table, contract, records)
+                audit(conn)
+        else:
+            # A destination database: two transactions, target rows first. The upsert is
+            # keyed on row_key, so replaying a chunk (reprocess) never duplicates rows.
             if records:
-                if engine.dialect.name == "postgresql":
-                    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-                    stmt = pg_insert(table)
-                else:
-                    from sqlalchemy.dialects.sqlite import insert as lite_insert
-
-                    stmt = lite_insert(table)
-                if contract.on_conflict == "skip":
-                    stmt = stmt.on_conflict_do_nothing(index_elements=["row_key"])
-                else:
-                    update = {
-                        c.name: stmt.excluded[c.name] for c in table.c if c.name not in ("row_key",)
-                    }
-                    update["batch_id"] = stmt.excluded["batch_id"]
-                    update["loaded_at"] = stmt.excluded["loaded_at"]
-                    stmt = stmt.on_conflict_do_update(index_elements=["row_key"], set_=update)
-                conn.execute(stmt, records)
-            for r in rejections:
-                conn.execute(
-                    RejectedRecord.__table__.insert().values(
-                        batch_id=batch_id,
-                        row_number=r.row_number,
-                        reason_code=r.reason_code,
-                        reason_message=r.reason_message,
-                        column_name=r.column_name,
-                        offending_value=r.offending_value,
-                        original_row=originals.get(r.row_number, {}),
-                    )
-                )
-            conn.execute(
-                BatchChunk.__table__.insert().values(
-                    batch_id=batch_id,
-                    chunk_index=chunk_index,
-                    row_start=row_start,
-                    row_end=row_end,
-                    status="committed",
-                    error=None,
-                )
-            )
+                with target_engine.begin() as conn:
+                    _upsert(conn, table, contract, records)
+            with engine.begin() as conn:
+                audit(conn)
         return len(records), len({r.row_number for r in rejections})
     except Exception as e:  # DB-level chunk failure → LOAD_ERROR path
         return 0, record_chunk_failure(

@@ -1,5 +1,6 @@
 """Versioned YAML contracts. src/ingest/core/contracts.py — spec §5."""
 
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +46,7 @@ class Contract:
     target_table: str = ""
     key: str | list = "row_hash"
     on_conflict: str = "update"
+    connection: str | None = None  # destination database; None = the app database
     columns: list[ColumnSpec] = field(default_factory=list)
     rules: list[RuleSpec] = field(default_factory=list)
     contract_hash: str = ""
@@ -208,17 +210,34 @@ def _validate_and_build(data: dict, path: Path) -> Contract:
         target_table=tgt["table"],
         key=tgt.get("key", "row_hash"),
         on_conflict=oc,
+        connection=tgt.get("connection") or None,
         columns=cols,
         rules=rules,
     )
 
 
 def build_pandera_schema(contract: Contract):
-    """Build a pandera DataFrameSchema from the contract (nullable/coerce/checks)."""
+    """Build a pandera DataFrameSchema from the contract (nullable/coerce/checks).
+
+    String columns are left out on purpose: every attribute a string column can
+    fail (required / in_set / pattern / length) is already checked explicitly and
+    deterministically in ``validate_chunk``, and a string cell can never fail type
+    coercion. Keeping them in the schema only made pandera build failure-case
+    frames for rows that were already rejected — the dominant cost on dirty files.
+
+    Built once per Contract instance: the schema is a pure function of the
+    contract and validation never mutates it.
+    """
+    cached = getattr(contract, "_pandera_schema", None)
+    if cached is not None:
+        return cached
+
     import pandera.pandas as pa
 
     fields = {}
     for c in contract.columns:
+        if c.type == "str":
+            continue
         dtype = {
             "int": "int64",
             "float": "float64",
@@ -240,4 +259,7 @@ def build_pandera_schema(contract: Contract):
         fields[c.name] = pa.Column(
             dtype, checks=checks or None, nullable=not c.required, coerce=True
         )
-    return pa.DataFrameSchema(fields, strict=False)
+    schema = pa.DataFrameSchema(fields, strict=False)
+    with contextlib.suppress(AttributeError, TypeError):  # dataclass allows this
+        contract._pandera_schema = schema
+    return schema

@@ -1,0 +1,15 @@
+{% extends "auth_base.html" %}
+{% block title %}Set up{% endblock %}
+{% block content %}
+<h1>Set up your workspace</h1>
+<p class="lede">Create the first admin account. You can invite everyone else from Admin settings afterwards.</p>
+{% if error %}<div class="flash error" role="alert" data-testid="setup-error">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+<form method="post" action="/setup" class="auth-form">
+  <div class="field"><label for="s-ws">Workspace name</label><input id="s-ws" class="input" name="workspace_name" value="{{ data.workspace_name or 'Ingest' }}" maxlength="60" data-testid="setup-workspace"></div>
+  <div class="field"><label for="s-name">Your name</label><input id="s-name" class="input" name="name" value="{{ data.name or '' }}" autocomplete="name" required data-testid="setup-name"></div>
+  <div class="field"><label for="s-email">Email</label><input id="s-email" class="input" type="email" name="email" value="{{ data.email or '' }}" autocomplete="username" required data-testid="setup-email"></div>
+  <div class="field"><label for="s-pass">Password</label><input id="s-pass" class="input" type="password" name="password" autocomplete="new-password" minlength="{{ min }}" required data-testid="setup-password"><div class="hint">At least {{ min }} characters.</div></div>
+  <div class="field"><label for="s-confirm">Confirm password</label><input id="s-confirm" class="input" type="password" name="confirm" autocomplete="new-password" required data-testid="setup-confirm"></div>
+  <button type="submit" class="btn primary block" data-testid="setup-submit">Create admin and sign in</button>
+</form>
+{% endblock %}

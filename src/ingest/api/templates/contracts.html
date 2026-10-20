@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}{{ c.name if c else "Contracts" }}{% endblock %}
+{% block content %}
+{% macro show(v) %}{% if v is none %}none{% elif v is string %}{{ v }}{% elif v is iterable %}{{ v|join(", ") }}{% else %}{{ v }}{% endif %}{% endmacro %}
+<div class="explorer">
+  <nav class="tree" aria-label="Contracts">
+    <div class="tree-head">
+      <span class="tree-title">Contracts <span class="hint">{{ tree|length }}</span></span>
+      {% if can(request, "contracts") %}<a class="icon-btn sm" href="/contracts/new" title="New contract" aria-label="New contract">{{ ui.icon("plus") }}</a>{% endif %}
+    </div>
+    <label class="search sm">
+      {{ ui.icon("search") }}
+      <input type="search" placeholder="Type to filter" aria-label="Filter contracts" data-filter-tree>
+    </label>
+    <ul class="tree-list" role="tree">
+      {% for t in tree %}
+      {% set open = c and c.name == t.name %}
+      <li role="treeitem" aria-expanded="{{ 'true' if open else 'false' }}" data-tree-name="{{ t.name }}">
+        <a class="tree-node{% if open %} is-open{% endif %}" href="/contracts/{{ t.name }}">
+          {{ ui.icon("chevron-down" if open else "chevron", "tree-caret") }}{{ ui.icon("contract") }}<span>{{ t.name }}</span>
+        </a>
+        {% if open %}
+        <ul role="group">
+          {% for v in t.versions %}
+          <li role="treeitem"><a class="tree-node leaf{% if version == v %} is-selected{% endif %}" href="/contracts/{{ t.name }}?v={{ v }}&tab={{ tab }}">{{ ui.icon("file") }}<span>v{{ v }}</span>{% if v == t.latest %}<span class="tag">latest</span>{% endif %}</a></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </nav>
+
+  <div class="explorer-main">
+  {% if not c %}
+    <div class="page-head">
+      <div>
+        <h1>Contracts</h1>
+        <p class="lede">A contract describes a file: the columns it must contain, the checks every row must pass, and the table its rows load into. Changes are saved as new versions.</p>
+      </div>
+      {% if can(request, "contracts") %}<div class="actions"><a class="btn primary" href="/contracts/new" data-testid="new-contract">{{ ui.icon("plus") }}New contract</a></div>{% endif %}
+    </div>
+    {{ ui.flash(flash) if flash }}
+    <section class="panel">
+      <div class="table-wrap">
+      <table class="data">
+        <thead><tr>
+          <th>Contract</th><th class="col-opt">Target table</th><th>Last run</th>
+          <th class="num">Runs</th><th class="num col-opt">Clean runs</th><th class="col-opt">Row acceptance</th><th class="num col-opt">Avg duration</th><th class="col-opt">Run history</th>
+        </tr></thead>
+        <tbody>
+        {% for e in catalog %}
+        {% set h = e.health %}
+        <tr class="row-link">
+          <td class="cell-file">
+            <a class="stretch" href="/contracts/{{ e.name }}"><span class="file-name">{{ e.name }}</span></a>
+            <span class="file-id">v{{ e.latest }}{% if e.versions|length > 1 %} · {{ e.versions|length }} versions{% endif %} · {{ e.contract.columns|length if e.contract else "?" }} columns</span>
+          </td>
+          <td class="mono col-opt">{{ e.contract.target_table if e.contract else "—" }}</td>
+          <td class="lift">{% if h and h.recent %}{% set last = h.recent[-1] %}{{ ui.status_badge(last) }}{% else %}<span class="cell-muted">Never run</span>{% endif %}</td>
+          <td class="num">{{ (h.runs if h else 0)|num }}</td>
+          <td class="num col-opt">{% if h and h.finished_runs %}{{ pct(h.clean_runs, h.finished_runs) }}%{% else %}—{% endif %}</td>
+          <td class="col-opt">{% if h and (h.accepted + h.rejected) %}{% set tot = h.accepted + h.rejected %}<span class="meter"><span class="outcome"><span class="seg ok" style="--w: {{ pct(h.accepted, tot) }}%"></span><span class="seg bad" style="--w: {{ pct(h.rejected, tot) }}%"></span></span><span class="meter-n">{{ pct(h.accepted, tot) }}%</span></span>{% else %}<span class="cell-muted">—</span>{% endif %}</td>
+          <td class="num col-opt">{{ (h.avg_seconds if h else none)|seconds }}</td>
+          <td class="col-opt lift">{% if h %}{{ ui.run_history(h.recent) }}{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">{{ ui.empty("contract", "No contracts yet", "Choose New contract, or draft one from a sample file.") }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </section>
+  {% else %}
+    {% set ref = c.name ~ "@v" ~ c.version %}
+    {% set h = health %}
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/contracts">Contracts</a>{{ ui.icon("chevron") }}<a href="/contracts/{{ c.name }}">{{ c.name }}</a>{{ ui.icon("chevron") }}<span>v{{ c.version }}</span>
+    </nav>
+    <div class="page-head">
+      <div class="head-main">
+        <div class="title-row">
+          <span class="title-icon">{{ ui.icon("contract") }}</span>
+          <h1>{{ c.name }}</h1>
+          <span class="tag strong">v{{ c.version }}{% if c.version == entry.latest %} · latest{% endif %}</span>
+          <button type="button" class="icon-btn sm" data-copy="{{ ref }}" aria-label="Copy {{ ref }}" title="Copy {{ ref }}">{{ ui.icon("copy") }}{{ ui.icon("check", "when-copied") }}</button>
+        </div>
+        {% if c.description %}<p class="lede">{{ c.description }}</p>{% endif %}
+      </div>
+      <div class="actions">
+        <a class="btn" href="/?contract={{ c.name }}">{{ ui.icon("runs") }}View runs</a>
+        {% if can(request, "contracts") %}
+        <a class="btn" href="/contracts/{{ c.name }}/edit?v={{ c.version }}" data-testid="edit-contract" title="Opens v{{ c.version }} pre-filled; saving creates v{{ entry.latest + 1 }}">{{ ui.icon("edit") }}Edit</a>
+        {% if not version_runs %}
+        <form action="/contracts/{{ c.name }}/delete" method="post" onsubmit="return confirm('Delete {{ ref }}? This cannot be undone.')">
+          <input type="hidden" name="version" value="{{ c.version }}">
+          <button type="submit" class="btn danger" data-testid="delete-contract" title="No batch has used {{ ref }}, so it can be deleted">{{ ui.icon("trash") }}Delete v{{ c.version }}</button>
+        </form>
+        {% endif %}
+        {% endif %}
+        {% if can(request, "ingest") %}<a class="btn primary" href="/upload?contract={{ ref }}">{{ ui.icon("upload") }}Ingest with {{ ref }}</a>{% endif %}
+      </div>
+    </div>
+    {{ ui.flash(flash) if flash }}
+
+    <div class="tabs" role="tablist" aria-label="Contract sections">
+      {% for key, label in [("columns", "Columns"), ("rules", "Rules"), ("versions", "Versions"), ("runs", "Runs"), ("quality", "Quality")] %}
+      <a role="tab" href="/contracts/{{ c.name }}?v={{ c.version }}&tab={{ key }}" {% if tab == key %}aria-selected="true" aria-current="page"{% else %}aria-selected="false"{% endif %}>{{ label }}
+        {%- if key == "columns" %}<span class="tab-n">{{ c.columns|length }}</span>{% elif key == "rules" and c.rules %}<span class="tab-n">{{ c.rules|length }}</span>{% elif key == "versions" %}<span class="tab-n">{{ entry.versions|length }}</span>{% elif key == "runs" and h %}<span class="tab-n">{{ h.runs }}</span>{% endif %}</a>
+      {% endfor %}
+    </div>
+
+    <div class="detail">
+    <div class="detail-main">
+    {% if tab == "columns" %}
+      <section class="panel">
+        <div class="filterbar">
+          <label class="search">{{ ui.icon("search") }}<input type="search" placeholder="Filter columns…" aria-label="Filter columns" data-filter-rows="#columns-table"></label>
+          <span class="hint push">Headers are matched case-sensitively; extra headers are ignored.</span>
+        </div>
+        <div class="table-wrap">
+        <table class="data" id="columns-table">
+          <thead><tr><th>File header</th><th>Column</th><th>Type</th><th>Checks</th></tr></thead>
+          <tbody>
+          {% for col in c.columns %}
+          <tr>
+            <td class="mono"><strong>{{ col.source_name }}</strong></td>
+            <td class="mono cell-muted">{{ col.name }}</td>
+            <td><span class="type">{{ col.type }}</span></td>
+            <td class="checks">
+              {% if col.required %}<span class="tag strong">required</span>{% else %}<span class="tag">optional</span>{% endif %}
+              {% if col.in_set %}<span class="tag">one of {{ col.in_set|join(", ") }}</span>{% endif %}
+              {% if col.pattern %}<span class="tag mono">{{ col.pattern }}</span>{% endif %}
+              {% if col.min is not none %}<span class="tag">≥ {{ col.min }}</span>{% endif %}
+              {% if col.max is not none %}<span class="tag">≤ {{ col.max }}</span>{% endif %}
+              {% if col.max_length %}<span class="tag">≤ {{ col.max_length }} chars</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </section>
+    {% elif tab == "rules" %}
+      <section class="panel">
+        {% if c.rules %}
+        <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>Reason code</th><th>Check</th><th>Column</th><th>Message</th></tr></thead>
+          <tbody>
+          {% for r in c.rules %}
+          <tr><td><span class="chip">{{ r.code }}</span></td><td class="mono">{{ r.check }}</td><td class="mono cell-muted">{{ r.column or "—" }}</td><td>{{ r.message }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        {% else %}
+        {{ ui.empty("shield", "No row rules", "This version only applies the column checks.") }}
+        {% endif %}
+      </section>
+    {% elif tab == "versions" %}
+      <section class="panel">
+        <ol class="timeline">
+          {% for item in history %}
+          <li class="tl-item{% if item.version == c.version %} is-current{% endif %}">
+            <div class="tl-head">
+              <a class="tl-title" href="/contracts/{{ c.name }}?v={{ item.version }}">v{{ item.version }}</a>
+              {% if item.version == entry.latest %}<span class="tag strong">latest</span>{% endif %}
+              {% if item.previous %}<span class="hint">changes from v{{ item.previous }}</span>{% else %}<span class="hint">first version</span>{% endif %}
+            </div>
+            {% set d = item.diff %}
+            {% if d %}
+            <ul class="changes">
+              {% for col in d.added %}<li><span class="chg add">+</span>Added column <code>{{ col.source_name }}</code> ({{ col.type }}{% if col.required %}, required{% endif %})</li>{% endfor %}
+              {% for col in d.removed %}<li><span class="chg del">−</span>Removed column <code>{{ col.source_name }}</code></li>{% endfor %}
+              {% for ch in d.changed %}{% for k, before, after in ch.diffs %}<li><span class="chg mod">~</span><code>{{ ch.column }}</code> {{ k|replace("_", " ") }}: <span class="was">{{ show(before) }}</span> → <strong>{{ show(after) }}</strong></li>{% endfor %}{% endfor %}
+              {% for code in d.rules_added %}<li><span class="chg add">+</span>Added rule <span class="chip">{{ code }}</span></li>{% endfor %}
+              {% for code in d.rules_removed %}<li><span class="chg del">−</span>Removed rule <span class="chip">{{ code }}</span></li>{% endfor %}
+              {% if not (d.added or d.removed or d.changed or d.rules_added or d.rules_removed) %}<li class="cell-muted">No schema or rule changes.</li>{% endif %}
+            </ul>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ol>
+      </section>
+    {% elif tab == "runs" %}
+      <section class="panel">
+        <div class="table-wrap">
+        <table class="data batches">
+          <thead><tr>
+            <th class="col-opt">Start time</th><th>File</th><th class="col-opt">Contract</th><th>Status</th>
+            <th class="num col-opt">Rows</th><th class="num">Accepted</th><th class="num">Rejected</th>
+            <th class="col-opt col-bar"><span class="sr-only">Outcome</span></th><th class="num col-opt">Duration</th>
+          </tr></thead>
+          <tbody>
+          {% for b in batches %}{{ ui.batch_row(b) }}{% else %}
+          <tr><td colspan="9">{{ ui.empty("inbox", "No runs under " ~ ref, "Ingest a file with this version to see it here.") }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </section>
+    {% elif tab == "quality" %}
+      {% set top = totals[0][1] if totals else 0 %}
+      <section class="panel" aria-labelledby="q-reasons">
+        <div class="panel-head"><h2 id="q-reasons">Rejections by reason</h2><span class="hint">all runs under {{ ref }}</span></div>
+        {% if totals %}
+        <div class="bars">
+          {% for code, n in totals %}
+          <a class="bar-row" href="/rejections?{{ qs(reason_code=code, contract=c.name) }}">
+            <span class="bar-label"><span class="chip">{{ code }}</span><span class="bar-desc">{{ reason_label(code) }}</span></span>
+            <span class="bar-track"><span class="bar-fill" style="--w: {{ pct(n, top) }}%"></span></span>
+            <span class="bar-count">{{ n|num }}</span><span class="bar-pct"></span>
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        {{ ui.empty("check", "No rejections recorded", "Every row ingested under this version passed its checks.") }}
+        {% endif %}
+      </section>
+      {% if columns %}
+      {% set ctop = columns[0][1] %}
+      <section class="panel" aria-labelledby="q-cols">
+        <div class="panel-head"><h2 id="q-cols">Rejections by column</h2><span class="hint">which headers cause the most trouble</span></div>
+        <div class="bars">
+          {% for col, n in columns %}
+          <div class="bar-row">
+            <span class="bar-label"><span class="mono">{{ source_of.get(col, col) or "(row-level rule)" }}</span></span>
+            <span class="bar-track"><span class="bar-fill" style="--w: {{ pct(n, ctop) }}%"></span></span>
+            <span class="bar-count">{{ n|num }}</span><span class="bar-pct"></span>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+    {% endif %}
+    </div>
+
+    <aside class="detail-side" aria-label="About this contract">
+      <section class="panel props">
+        <h2 class="props-title">About this contract</h2>
+        <dl class="kv">
+          <dt>Target table</dt><dd class="mono">{{ c.target_table }}</dd>
+          <dt>Database</dt><dd>{% if c.connection %}<a href="/connections/{{ c.connection }}">{{ c.connection }}</a>{% else %}Platform database{% endif %}</dd>
+          <dt>Key</dt><dd class="mono">{{ c.key if c.key is string else c.key|join(", ") }}</dd>
+          <dt>On conflict</dt><dd>{{ c.on_conflict }}</dd>
+          <dt>Formats</dt><dd>{{ c.source_formats|join(", ")|upper }}</dd>
+          <dt>Encoding</dt><dd>{{ c.encoding }} · delimiter <code>{{ c.delimiter }}</code></dd>
+          <dt>Hash</dt><dd class="mono cell-muted" title="{{ c.contract_hash }}">{{ c.contract_hash[:12] }}…</dd>
+          <dt>Runs on v{{ c.version }}</dt><dd>{{ version_runs|num }}{% if version_runs %} <span class="hint">· locked, cannot be deleted</span>{% endif %}</dd>
+        </dl>
+        <p class="hint"><a href="/tables/{{ c.target_table }}{{ ('@' ~ c.connection) if c.connection }}">Browse {{ c.target_table }} →</a></p>
+      </section>
+      <section class="panel props">
+        <h2 class="props-title">Health</h2>
+        {% if h and h.runs %}
+        <dl class="kv">
+          <dt>Runs</dt><dd>{{ h.runs|num }}</dd>
+          <dt>Clean runs</dt><dd>{% if h.finished_runs %}{{ pct(h.clean_runs, h.finished_runs) }}%{% else %}—{% endif %}</dd>
+          <dt>Row acceptance</dt><dd>{% set tot = h.accepted + h.rejected %}{% if tot %}{{ pct(h.accepted, tot) }}%{% else %}—{% endif %}</dd>
+          <dt>Avg duration</dt><dd>{{ h.avg_seconds|seconds }}</dd>
+          <dt>Recent runs</dt><dd>{{ ui.run_history(h.recent) }}</dd>
+        </dl>
+        <p class="hint">Across every version of {{ c.name }}.</p>
+        {% else %}
+        <p class="hint">No runs yet.</p>
+        {% endif %}
+      </section>
+    </aside>
+    </div>
+  {% endif %}
+  </div>
+</div>
+<script>
+(function () {
+  var tree = document.querySelector("[data-filter-tree]");
+  if (tree) tree.addEventListener("input", function () {
+    var q = tree.value.toLowerCase();
+    document.querySelectorAll("[data-tree-name]").forEach(function (li) { li.hidden = q && li.getAttribute("data-tree-name").toLowerCase().indexOf(q) < 0; });
+  });
+  var rows = document.querySelector("[data-filter-rows]");
+  if (rows) rows.addEventListener("input", function () {
+    var q = rows.value.toLowerCase();
+    document.querySelectorAll(rows.getAttribute("data-filter-rows") + " tbody tr").forEach(function (tr) { tr.hidden = q && tr.textContent.toLowerCase().indexOf(q) < 0; });
+  });
+})();
+</script>
+{% endblock %}

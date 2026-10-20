@@ -1,0 +1,49 @@
+contract: txn_test
+version: 2
+description: Test transaction feed; v2 fixes the Type set to allow REFUND (test fixture, do not edit)
+source:
+  formats: [csv, xlsx]
+  encoding: utf-8
+  delimiter: ","
+target:
+  table: test_transactions
+  key: [txn_id]
+  on_conflict: update
+columns:
+  - name: txn_id
+    source_name: TxnId
+    type: str
+    required: true
+    pattern: "^T[0-9]{4}$"
+  - name: amount
+    source_name: Amount
+    type: float
+    required: true
+    max: 1000000
+  - name: txn_type
+    source_name: Type
+    type: str
+    required: true
+    in_set: [PAYMENT, TRANSFER, CASH_OUT, REFUND]
+  - name: customer_id
+    source_name: CustomerId
+    type: str
+    required: true
+  - name: txn_date
+    source_name: TxnDate
+    type: date
+    required: true
+  - name: memo
+    source_name: Memo
+    type: str
+    required: false
+rules:
+  - code: AMOUNT_NEGATIVE
+    column: amount
+    check: ">= 0"
+    message: amount must be non-negative
+  - code: CUSTOMER_NOT_FOUND
+    column: customer_id
+    check: exists_in
+    reference: { table: ref_customers, column: customer_id }
+    message: customer_id not found in ref_customers

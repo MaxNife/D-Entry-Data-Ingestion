@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block content %}
+{% macro sub(href, key, label) -%}
+<a class="sub-item" href="{{ href }}" {% if section == key %}aria-current="page"{% endif %}>{{ label }}</a>
+{%- endmacro %}
+<div class="settings-shell">
+  <nav class="settings-nav" aria-label="Settings">
+    <div class="settings-title">Settings</div>
+    {% if can(request, "admin") %}
+    <div class="sub-heading">{{ ui.icon("shield") }}Workspace admin</div>
+    {{ sub("/admin/users", "users", "Users") }}
+    {{ sub("/admin/workspace", "workspace", "Workspace settings") }}
+    {{ sub("/admin/audit", "audit", "Audit log") }}
+    {{ sub("/admin/system", "system", "System") }}
+    {% endif %}
+    <div class="sub-heading">{{ ui.icon("gear") }}User</div>
+    {{ sub("/settings/profile", "profile", "Profile") }}
+    {{ sub("/settings/preferences", "preferences", "Preferences") }}
+    {{ sub("/settings/tokens", "tokens", "Access tokens") }}
+  </nav>
+  <div class="settings-main">
+    {% block settings %}{% endblock %}
+  </div>
+</div>
+{% endblock %}

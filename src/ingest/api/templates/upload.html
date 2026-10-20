@@ -1,15 +1,43 @@
 {% extends "base.html" %}
-{% block title %}Upload · Ingest Platform{% endblock %}
+{% import "_macros.html" as ui %}
+{% block title %}Add data{% endblock %}
+{% block new_button %}<a class="new-btn" href="/upload" aria-current="page">{{ ui.icon("plus") }}<span class="nav-label">New ingestion</span></a>{% endblock %}
+{% block new_dialog %}{% endblock %}
 {% block content %}
-<section class="panel">
-  <h2>Upload a file</h2>
-  <form action="/upload" method="post" enctype="multipart/form-data">
-    <label>File (CSV/Excel) <input type="file" name="file" required data-testid="upload-file"></label>
-    <label>Contract
-      <select name="contract" data-testid="upload-contract">{% for n,v in contracts %}<option value="{{ n }}@v{{ v }}">{{ n }}@v{{ v }}</option>{% endfor %}</select>
-    </label>
-    <button type="submit" data-testid="upload-submit">Ingest</button>
-  </form>
-  {% if upload_message %}<p data-testid="upload-message">{{ upload_message }}</p>{% endif %}
-</section>
+<div class="page-head">
+  <div>
+    <h1>Add data</h1>
+    <p class="lede">Upload a CSV or Excel file and check it against a contract. Rows that pass are loaded into the contract's table; rows that fail are kept with the reason, so you can fix them.</p>
+  </div>
+  <div class="actions"><a class="btn" href="/connections">{{ ui.icon("plug") }}From a database</a></div>
+</div>
+
+<div class="upload-layout">
+  <section class="panel" aria-labelledby="new-batch">
+    <div class="panel-head">
+      <span class="source-icon">{{ ui.icon("upload") }}</span>
+      <div>
+        <h2 id="new-batch">Upload a file</h2>
+        <div class="hint">CSV or Excel, up to 50 MB</div>
+      </div>
+    </div>
+    <div class="panel-body">
+      <form action="/upload" method="post" enctype="multipart/form-data" class="upload-stack" data-upload>
+        {{ ui.upload_fields(contracts, selected, origin="upload", preview_target="#contract-preview") }}
+      </form>
+      {{ ui.flash(message) }}
+      <ul class="notes">
+        <li><strong>Validate only</strong> checks every row and shows what would load and what would fail. Nothing is loaded.</li>
+        <li>Uploading the same file again under the same contract version does nothing; you are taken to the earlier run.</li>
+        <li>Choose <em>latest</em> to always use the newest version of a contract, or pick a version to stay on it.</li>
+        <li>Scripts can send the same file with <code>POST /api/batches</code> or <code>ingest upload</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="contract-title">
+    <div class="panel-head"><h2 id="contract-title">What the file must contain</h2><a class="hint push" href="/contracts/new">New contract →</a></div>
+    <div id="contract-preview">{% include "_contract.html" %}</div>
+  </section>
+</div>
 {% endblock %}

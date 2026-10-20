@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}Validation · {{ v.file_name }}{% endblock %}
+{% block content %}
+{% set cls = {"valid": "ok", "invalid": "warn", "failed": "bad", "running": "run"}[v.status] %}
+{% set label = {"valid": "All rows pass", "invalid": "Some rows fail", "failed": "Could not read", "running": "Checking"}[v.status] %}
+{% set icon_name = {"valid": "check-circle", "invalid": "warn-circle", "failed": "x-circle", "running": "spin"}[v.status] %}
+<div id="validation-live"{% if live %} data-quiet hx-get="/validations/{{ v.id }}" hx-trigger="every 1s" hx-select="#validation-live" hx-swap="outerHTML"{% endif %}>
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/validations">Validations</a>{{ ui.icon("chevron") }}<span>{{ v.file_name }}</span>
+</nav>
+<div class="page-head">
+  <div class="head-main">
+    <div class="title-row">
+      <span class="title-icon">{{ ui.icon("shield") }}</span>
+      <h1 class="title-file" title="{{ v.file_name }}">{{ v.file_name }}</h1>
+      <span class="badge {{ cls }}" data-testid="validation-status" data-status="{{ v.status }}">{{ ui.icon(icon_name, "badge-icon") }}<span>{{ label }}</span></span>
+    </div>
+    <p class="lede">Checked against {{ ui.contract_ref(v.contract_name, v.contract_version) }} without loading anything{% if not live %}: <span class="mono">{{ v.target_table }}</span> is unchanged. Took {{ (v.elapsed_ms / 1000)|round(2) }} s{% endif %}.</p>
+  </div>
+  <div class="actions">
+    {% if can(request, "ingest") %}<a class="btn" href="/upload?contract={{ v.contract_ref }}">{{ ui.icon("shield") }}Validate another file</a>{% endif %}
+    {% if v.status not in ("failed", "running") %}
+    {% if v.rejected_rows and can(request, "download") %}<a class="btn" href="/validations/{{ v.id }}/report.csv" download>{{ ui.icon("download") }}Issues report</a>{% endif %}
+    {% if can(request, "ingest") %}
+    <form action="/validations/{{ v.id }}/ingest" method="post">
+      <button type="submit" class="btn primary" data-testid="validation-ingest">{{ ui.icon("upload") }}Ingest this file</button>
+    </form>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{% if live %}
+{{ ui.progress_panel(
+     "Checking " ~ v.file_name,
+     prog,
+     ["File received", "Reading the file", "Checking rows", "Summarising"],
+     1 if not v.total_rows else (3 if prog.expected and prog.done >= prog.expected else 2),
+     [("Passing so far", v.accepted_rows|num), ("Failing so far", v.rejected_rows|num)],
+     rows_label="Rows checked"
+   ) }}
+{% elif v.status == "failed" %}
+<div class="callout bad">{{ ui.icon("alert") }}<div><strong>The file could not be checked.</strong><div class="callout-detail">{{ v.failure_reason }}</div><div class="callout-hint">Compare the file's headers with the contract's columns, or <a href="/contracts/new">draft a contract from this file</a>.</div></div></div>
+{% else %}
+{% set settled = v.accepted_rows + v.rejected_rows %}
+<section class="panel summary">
+  <dl class="stats">
+    <div class="stat"><dt>Rows checked</dt><dd>{{ v.total_rows|num }}</dd></div>
+    <div class="stat"><dt><span class="key ok"></span>Would load</dt><dd class="{{ 'is-ok' if v.accepted_rows }}">{{ v.accepted_rows|num }}</dd></div>
+    <div class="stat"><dt><span class="key bad"></span>Would be rejected</dt><dd class="{{ 'is-bad' if v.rejected_rows }}">{{ v.rejected_rows|num }}</dd></div>
+    <div class="stat"><dt>Pass rate</dt><dd>{% if settled %}{{ pct(v.accepted_rows, settled) }}%{% else %}—{% endif %}</dd></div>
+  </dl>
+  {% if settled %}{{ ui.outcome_bar(v, "lg") }}{% endif %}
+</section>
+
+{% if v.reasons %}
+<div class="two-col">
+  <section class="panel">
+    <div class="panel-head"><h2>Issues by reason</h2></div>
+    {% set top = (v.reasons.values()|list)[0] %}
+    <div class="bars">
+      {% for code, n in v.reasons.items() %}
+      <div class="bar-row"><span class="bar-label"><span class="chip">{{ code }}</span><span class="bar-desc">{{ reason_label(code) }}</span></span>
+        <span class="bar-track"><span class="bar-fill" style="--w: {{ pct(n, top) }}%"></span></span><span class="bar-count">{{ n|num }}</span><span class="bar-pct"></span></div>
+      {% endfor %}
+    </div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Issues by column</h2></div>
+    {% set ctop = (v.columns.values()|list)[0] %}
+    <div class="bars">
+      {% for col, n in v.columns.items() %}
+      <div class="bar-row"><span class="bar-label"><span class="mono">{{ col or "(row rule)" }}</span></span>
+        <span class="bar-track"><span class="bar-fill" style="--w: {{ pct(n, ctop) }}%"></span></span><span class="bar-count">{{ n|num }}</span><span class="bar-pct"></span></div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><h2>Rows that would be rejected</h2><span class="hint push">first {{ [v.records|length, 500]|min|num }}{% if v.truncated or v.records|length > 500 %} · the issues report has more{% endif %}</span></div>
+  <div class="table-wrap">
+    <table class="data records">
+      <thead><tr><th class="num">Row</th><th>Reason</th><th>Column</th><th>Value</th><th class="col-msg">Message</th></tr></thead>
+      <tbody>
+      {% for r in v.records[:500] %}
+        <tr><td class="num mono">{{ r.row_number|num }}</td><td><span class="chip">{{ r.reason_code }}</span></td><td class="mono cell-muted">{{ r.column or "—" }}</td>
+          <td>{% if r.value is none %}<span class="cell-muted">—</span>{% elif r.value == "" %}<span class="val is-empty">empty</span>{% else %}<code class="val">{{ r.value }}</code>{% endif %}</td>
+          <td class="col-msg">{{ r.reason_message }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<section class="panel">{{ ui.empty("check", "Every row passes", "Ingest the file to load all " ~ (v.total_rows|num) ~ " rows into " ~ v.target_table ~ ".") }}</section>
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}

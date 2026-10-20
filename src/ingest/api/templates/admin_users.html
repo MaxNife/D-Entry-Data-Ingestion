@@ -1,0 +1,84 @@
+{% extends "settings_base.html" %}
+{% block title %}Users{% endblock %}
+{% block settings %}
+{% set me = request.state.user %}
+<nav class="breadcrumb" aria-label="Breadcrumb"><span>Workspace admin</span>{{ ui.icon("chevron") }}<span>Users</span></nav>
+<div class="settings-head row">
+  <div><h1>Users</h1><p class="lede">Who can sign in to {{ request.state.settings.workspace_name }} and what their role lets them do.</p></div>
+  <button type="button" class="btn primary" data-open="add-user" data-testid="add-user">{{ ui.icon("plus") }}Add user</button>
+</div>
+{% if not request.state.auth_on %}
+<div class="callout bad" role="status">{{ ui.icon("alert") }}<div><strong>Sign-in is off.</strong> Anyone who can reach this address acts as an admin, and the accounts below are not used yet. An operator turns sign-in on by setting <code>INGEST_AUTH=on</code> and restarting the service.</div></div>
+{% endif %}
+{% if error %}<div class="flash error" role="alert" data-testid="users-error">{{ ui.icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+{% if notice %}<div class="flash info" role="status">{{ ui.icon("check") }}<span>{{ notice }}</span></div>{% endif %}
+{% if temp %}
+<div class="callout info token-once" role="status" data-testid="temp-password">
+  {{ ui.icon("info") }}
+  <div><strong>{{ "Account created" if temp.new else "Password reset" }} for {{ temp.email }}.</strong> Give them this temporary password; they choose their own when they first sign in. It is not shown again.
+    <div class="token-row"><code class="mono" data-temp-password>{{ temp.password }}</code><button type="button" class="btn sm" data-copy="{{ temp.password }}">{{ ui.icon("copy") }}{{ ui.icon("check", "when-copied") }}Copy</button></div>
+  </div>
+</div>
+{% endif %}
+
+<div class="role-legend">
+  {% for key, label in roles.items() %}<div><span class="tag strong">{{ label }}</span><span class="hint">{{ role_help[key] }}</span></div>{% endfor %}
+</div>
+
+<section class="panel">
+  <form method="get" class="filterbar" role="search">
+    <label class="search">{{ ui.icon("search") }}<input type="search" name="q" value="{{ q }}" placeholder="Search by name or email" aria-label="Search users"></label>
+    <span class="hint push">{{ users|length }} {{ "user" if users|length == 1 else "users" }}</span>
+  </form>
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr><th>Name</th><th>Role</th><th>Status</th><th class="col-opt">Last sign-in</th><th class="col-opt">Added</th><th><span class="sr-only">Actions</span></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr data-testid="user-row" data-email="{{ u.email }}">
+        <td class="cell-file"><span class="file-name plain">{{ u.name }}{% if u.id == me.id %} <span class="tag">You</span>{% endif %}</span><span class="file-id">{{ u.email }}</span></td>
+        <td>
+          <form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form">
+            <select name="role" aria-label="Role for {{ u.email }}" onchange="this.form.requestSubmit()" data-testid="user-role">{% for key, label in roles.items() %}<option value="{{ key }}" {% if u.role == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          </form>
+        </td>
+        <td>{% if not u.active %}<span class="badge idle"><span>Deactivated</span></span>{% elif u.must_change_password %}<span class="badge warn" title="Has not chosen their own password yet"><span>Invited</span></span>{% else %}<span class="badge ok"><span>Active</span></span>{% endif %}</td>
+        <td class="col-opt cell-muted">{{ u.last_login_at|ago if u.last_login_at else "Never" }}</td>
+        <td class="col-opt cell-muted">{{ u.created_at|ago }}</td>
+        <td class="num">
+          <details class="menu">
+            <summary class="icon-btn sm" aria-label="Actions for {{ u.email }}" data-testid="user-actions">⋯</summary>
+            <div class="menu-pop" role="menu">
+              <form method="post" action="/admin/users/{{ u.id }}/reset-password" onsubmit="return confirm('Reset the password for {{ u.email }}? They will be signed out.')"><button class="menu-btn" type="submit" data-testid="user-reset">Reset password</button></form>
+              {% if u.active %}
+              <form method="post" action="/admin/users/{{ u.id }}/active" onsubmit="return confirm('Deactivate {{ u.email }}? They are signed out and cannot sign in.')"><input type="hidden" name="active" value="0"><button class="menu-btn danger" type="submit" data-testid="user-deactivate">Deactivate</button></form>
+              {% else %}
+              <form method="post" action="/admin/users/{{ u.id }}/active"><input type="hidden" name="active" value="1"><button class="menu-btn" type="submit" data-testid="user-reactivate">Reactivate</button></form>
+              {% endif %}
+            </div>
+          </details>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6">{{ ui.empty("shield", "No users yet", "Add the people who should sign in.") }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<dialog class="drawer" id="add-user" aria-labelledby="add-user-title">
+  <div class="drawer-head"><h2 id="add-user-title">Add user</h2><button type="button" class="icon-btn" data-close aria-label="Close">{{ ui.icon("x") }}</button></div>
+  <form method="post" action="/admin/users" class="drawer-body upload-stack">
+    <div class="field"><label for="u-email">Email</label><input id="u-email" class="input" type="email" name="email" required data-testid="new-user-email"></div>
+    <div class="field"><label for="u-name">Name</label><input id="u-name" class="input" name="name" maxlength="80" data-testid="new-user-name"></div>
+    <fieldset class="field"><legend>Role</legend>
+      {% for key, label in roles.items() %}
+      <label class="role-option"><input type="radio" name="role" value="{{ key }}" {% if key == "viewer" %}checked{% endif %} data-testid="new-user-role-{{ key }}"><span><strong>{{ label }}</strong><span class="hint">{{ role_help[key] }}</span></span></label>
+      {% endfor %}
+    </fieldset>
+    <div class="step-actions"><button type="submit" class="btn primary" data-testid="new-user-submit">Add user</button></div>
+  </form>
+  <div class="drawer-foot hint">You'll get a temporary password to pass on. They choose their own the first time they sign in.</div>
+</dialog>
+{% endblock %}

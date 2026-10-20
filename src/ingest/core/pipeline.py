@@ -1,6 +1,7 @@
 """Orchestration: hash → idempotency → validate → load → finalize.
 src/ingest/core/pipeline.py — spec §6. One function runs the whole flow."""
 
+import re
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -19,10 +20,17 @@ from ingest.core.validation import validate_chunk
 from ingest.db.models import Batch
 
 EXCEL_MAX_BYTES = 50 * 1024 * 1024
+_ZERO_COUNTS = {"total_rows": 0, "accepted_rows": 0, "rejected_rows": 0}
 
 
 def _utcnow():
     return datetime.now(UTC)
+
+
+def safe_file_name(name: str) -> str:
+    """Last path component of a client-supplied name: '../../x.csv' -> 'x.csv'."""
+    base = re.split(r"[\\/]", name)[-1].strip()
+    return base if base not in ("", ".", "..") else "upload"
 
 
 def store_upload(
@@ -30,7 +38,7 @@ def store_upload(
 ) -> Path:
     dest_dir = Path(upload_dir or settings.upload_dir) / sha
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / (file_name or src.name)
+    dest = dest_dir / safe_file_name(file_name or src.name)
     if not dest.exists():
         shutil.copyfile(src, dest)
     return dest
@@ -51,6 +59,36 @@ def get_batch(engine, batch_id: str) -> Batch | None:
         return s.execute(select(Batch).where(Batch.batch_id == batch_id)).scalars().one_or_none()
 
 
+class ReprocessConflict(ValueError):
+    """The file already has its own batch under the version a reprocess would move to."""
+
+    def __init__(self, ref: str, existing_batch_id: str | None):
+        self.ref = ref
+        self.existing_batch_id = existing_batch_id
+        where = f" (batch {existing_batch_id})" if existing_batch_id else ""
+        super().__init__(
+            f"cannot reprocess under {ref}: this file was already ingested under that "
+            f"version{where}. Open that batch instead."
+        )
+
+
+def twin_batch(engine, batch: Batch, name: str, version: int) -> Batch | None:
+    """Another batch of the same file under contract ``name`` version ``version``, if any."""
+    with Session(engine) as s:
+        return (
+            s.execute(
+                select(Batch).where(
+                    Batch.file_sha256 == batch.file_sha256,
+                    Batch.contract_name == name,
+                    Batch.contract_version == version,
+                    Batch.batch_id != batch.batch_id,
+                )
+            )
+            .scalars()
+            .first()
+        )
+
+
 def _fail(engine, batch_id: str, reason: str) -> dict:
     with engine.begin() as conn:
         conn.execute(
@@ -61,6 +99,16 @@ def _fail(engine, batch_id: str, reason: str) -> dict:
     return {"batch_id": batch_id, "status": "failed", "skipped": False, "failure_reason": reason}
 
 
+def _progress(engine, batch_id: str, total: int, accepted: int, rejected: int) -> None:
+    """Publish running counters after each chunk so a watcher sees progress."""
+    with engine.begin() as conn:
+        conn.execute(
+            Batch.__table__.update()
+            .where(Batch.batch_id == batch_id)
+            .values(total_rows=total, accepted_rows=accepted, rejected_rows=rejected)
+        )
+
+
 def _rename(df: pd.DataFrame, contract: Contract) -> pd.DataFrame:
     mapping = {c.source_name: c.name for c in contract.columns if c.source_name in df.columns}
     return df.rename(columns=mapping)
@@ -68,10 +116,8 @@ def _rename(df: pd.DataFrame, contract: Contract) -> pd.DataFrame:
 
 def _originals(df_source: pd.DataFrame, row_offset: int) -> dict[int, dict]:
     """row_number → full original row (original headers), values as read."""
-    out = {}
-    for i, (_, row) in enumerate(df_source.iterrows()):
-        out[row_offset + i + 1] = {k: (None if pd.isna(v) else v) for k, v in row.items()}
-    return out
+    rows = df_source.astype(object).where(df_source.notna(), None).to_dict("records")
+    return {row_offset + i + 1: row for i, row in enumerate(rows)}
 
 
 def _chunk_frames(path: Path, contract: Contract, chunk_size: int):
@@ -126,7 +172,13 @@ def _process(engine, batch_id: str, stored: Path, contract: Contract, chunk_size
     if problem:
         return _fail(engine, batch_id, problem)
 
-    ref_values = loader.fetch_ref_values(engine, contract)
+    from ingest.core.connections import target_engine
+
+    try:
+        target = target_engine(engine, contract)
+    except Exception as e:
+        return _fail(engine, batch_id, f"destination {contract.connection!r} is unavailable: {e}")
+    ref_values = loader.fetch_ref_values(target, contract)
     total = accepted = rejected = 0
     chunk_index = 0
     try:
@@ -149,6 +201,7 @@ def _process(engine, batch_id: str, stored: Path, contract: Contract, chunk_size
                     accepted=result.accepted,
                     rejections=result.rejections,
                     originals=originals,
+                    target_engine=target,
                 )
             except Exception as e:  # chunk-level failure → LOAD_ERROR, continue
                 a, r = (
@@ -167,6 +220,7 @@ def _process(engine, batch_id: str, stored: Path, contract: Contract, chunk_size
             rejected += r
             total += len(source)
             chunk_index += 1
+            _progress(engine, batch_id, total, accepted, rejected)
     except Exception as e:
         return _fail(engine, batch_id, f"pipeline error: {e}")
 
@@ -212,7 +266,7 @@ def submit_upload(
     contract: Contract = load_contract(contract_ref)
 
     sha = sha256_file(src)
-    stored_name = file_name or src.name
+    stored_name = safe_file_name(file_name or src.name)
     store_upload(src, sha, file_name=stored_name)
 
     with Session(engine) as s:
@@ -289,7 +343,12 @@ def execute_batch(engine, batch_id: str, chunk_size: int | None = None) -> dict:
         conn.execute(
             Batch.__table__.update()
             .where(Batch.batch_id == batch_id)
-            .values(status="processing", started_at=_utcnow(), finished_at=None)
+            .values(
+                status="processing",
+                started_at=_utcnow(),
+                finished_at=None,
+                **_ZERO_COUNTS,
+            )
         )
     return _process(engine, batch_id, stored, contract, chunk_size)
 
@@ -316,6 +375,9 @@ def run_pipeline(
             raise ValueError(f"unknown batch {reprocess_batch_id}")
         if batch.status not in ("partial", "failed"):
             raise ValueError(f"only partial/failed batches can be reprocessed (got {batch.status})")
+        ref = f"{contract.name}@v{contract.version}"
+        if twin := twin_batch(engine, batch, contract.name, contract.version):
+            raise ReprocessConflict(ref, twin.batch_id)
         try:
             with engine.begin() as conn:
                 conn.execute(
@@ -323,6 +385,7 @@ def run_pipeline(
                     .where(Batch.batch_id == batch.batch_id)
                     .values(
                         status="processing",
+                        **_ZERO_COUNTS,
                         contract_name=contract.name,
                         contract_version=contract.version,
                         contract_hash=contract.contract_hash,
@@ -332,11 +395,8 @@ def run_pipeline(
                         retry_attempts=(batch.retry_attempts + 1),
                     )
                 )
-        except IntegrityError as e:
-            raise ValueError(
-                f"cannot reprocess under {contract.name}@v{contract.version}: "
-                f"this file was already processed under that version ({e})"
-            ) from e
+        except IntegrityError as e:  # a concurrent upload claimed that version first
+            raise ReprocessConflict(ref, None) from e
         loader.clear_attempt(engine, batch.batch_id)
         batch_id = batch.batch_id
         stored = stored_path(batch)
